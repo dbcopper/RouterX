@@ -1,0 +1,10 @@
+﻿apiVersion: 1
+dashboards:
+  - name: RouterX
+    orgId: 1
+    folder: RouterX
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

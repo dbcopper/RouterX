@@ -1,0 +1,14 @@
+﻿.env
+*.key
+*.pem
+secrets/
+private/
+credentials/
+agent.md
+Claude.md
+node_modules/
+frontend/.next/
+frontend/out/
+backend/bin/
+*.log
+.DS_Store

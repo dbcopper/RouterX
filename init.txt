@@ -1,0 +1,117 @@
+You are a senior AI Infra/Platform engineer. Generate a runnable monorepo codebase for a provider-agnostic LLM/VLM Gateway + Router with a web-based Admin Console (UI). You MUST output the full repository as file-by-file contents using the format: "--- <path> ---\n<content>\n". Do NOT provide only an architecture description—provide real, compilable code, configs, docker-compose, and docs so I can copy-paste and run it locally.
+
+IMPORTANT LANGUAGE RULE:
+- EVERYTHING inside the repository must be in ENGLISH: file paths, filenames, code identifiers, comments, UI copy, README, configs, sample data, etc.
+- Only this chat response can be in Chinese; the generated repository content must be 100% English.
+
+========================
+Project positioning
+========================
+- Portfolio project for AI Infra roles
+- A unified chat API entrypoint that routes to multiple model providers (provider-agnostic)
+- Supports both LLM (text) and VLM (text + image -> text)
+- Emphasize multi-provider routing in README/UI. Do not over-emphasize OpenAI as a vendor; only mention compatibility as an API shape.
+
+========================
+Providers & extensibility requirements
+========================
+- Implement at least 3 native provider adapters:
+  1) OpenAI
+  2) Anthropic
+  3) Google Gemini
+- Also implement one "Generic OpenAI-Compatible Adapter" for extensibility:
+  - It supports ANY upstream that exposes an OpenAI-style Chat Completions API shape.
+  - It is configured via UI and/or DB: base_url, api_key (optional), default_model, and capability flags.
+  - This is the main mechanism to add new providers or self-hosted inference endpoints with minimal/no code changes.
+- Real external calls must be DISABLED by default via env:
+  - ENABLE_REAL_CALLS=false
+  - When disabled, providers must return deterministic dummy responses or use a mock provider so the system runs locally without real keys.
+  - Still include real HTTP call logic guarded by feature flags (structure must be complete).
+
+========================
+API surface (LLM + VLM)
+========================
+- Expose a single public API:
+  - POST /v1/chat/completions
+  - Support stream=true via SSE (text/event-stream)
+- LLM support: text-only messages
+- VLM support: message content supports text + image:
+  - You MUST implement image_url support at minimum (base64 optional)
+- Router must implement capability negotiation:
+  - If a request includes an image, route ONLY to providers/models with vision capability.
+  - If text-only, route to any provider/model that supports text.
+- Normalize outputs into a common Chat Completions-like structure:
+  - id/object/created/model/choices/usage (best-effort)
+  - Unified error format: {error:{message,type,code}} with reasonable HTTP statuses.
+
+========================
+Tech stack (must follow)
+========================
+Backend (backend/)
+- Go 1.22+
+- HTTP: chi
+- DB: PostgreSQL (tables: tenants, api_keys, providers, routing_rules, request_logs(metadata only), usage_daily, admin_users)
+- Redis: tenant rate limiting + concurrency + provider health cache
+- Migrations: goose OR golang-migrate (include migrations files)
+- Logging: zap (STRICT redaction: never log prompt/response plaintext; log only length/hash/metadata)
+- Observability:
+  - Prometheus /metrics
+  - OpenTelemetry tracing exported to Jaeger or Tempo (included in docker-compose)
+- Streaming: SSE must work end-to-end
+
+Frontend (frontend/)
+- Next.js 14+ (App Router)
+- TailwindCSS + shadcn/ui
+- Charts: recharts
+- Admin auth: username/password (bcrypt) + JWT
+- Pages (minimum):
+  - Dashboard (req volume, error rate, p95 latency, TTFT, fallback count, tokens)
+  - Providers (list, status, capabilities: text vs vision; add/edit Generic provider)
+  - Routing Rules (CRUD)
+  - Tenants & API Keys (CRUD + quotas/limits)
+  - Requests/Audit (metadata only)
+
+Deploy (deploy/)
+- docker-compose includes: postgres, redis, backend, frontend, prometheus, grafana, jaeger(or tempo)
+- Provide prometheus.yml
+- Provide grafana datasource + at least one dashboard JSON
+
+Engineering
+- Makefile: make up/down/test/lint/migrate/seed/loadtest
+- scripts/seed: creates default admin, demo tenant, demo API key (FAKE), demo providers and routing rules
+- scripts/loadtest: k6 or vegeta load test script
+- README in English: "5-minute run", UI URL, curl examples (stream/non-stream, vision example), demonstrate fallback/circuit breaker, Grafana/Jaeger URLs
+
+========================
+Core constraints
+========================
+- Adapter design must be plugin-like:
+  - New providers can be added via implementing an interface (native) OR via the Generic adapter config (no code change).
+- Router must support:
+  - primary/secondary fallback
+  - basic circuit breaker (sliding window error rate + cool-down)
+  - timeouts
+- Multi-tenant:
+  - Authorization: Bearer <api_key> -> tenant
+- Limits:
+  - per-tenant QPS + concurrency using Redis
+- Request logs:
+  - store metadata only: tenant/model/provider/latency/ttft/tokens/prompt_hash/fallback_chain/status/error_code
+  - prompt_hash = sha256 of normalized message text (do NOT store text)
+
+========================
+SECURITY & REPO HYGIENE (critical)
+========================
+- Do NOT hardcode any real API keys/tokens/secrets anywhere.
+- Do NOT include any real keys in README, seed scripts, compose files, or frontend configs.
+- Provide:
+  - .env.example (safe to commit, uses placeholders)
+  - .env (local only, MUST be gitignored)
+- Provide .gitignore that MUST include at least:
+  - .env
+  - *.key, *.pem
+  - secrets/, private/, credentials/
+  - agent.md
+  - Claude.md
+- Demo API key generated by seed MUST be explicitly fake (e.g., demo_key_xxx) and labeled as fake in README.
+- Optional bonus: add a lightweight pre-commit hook or a script to block committing secrets (basic regex checks for "sk-" / "api_key=" / "Bearer " etc.)

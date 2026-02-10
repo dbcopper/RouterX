@@ -1,0 +1,16 @@
+﻿@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-sand text-ink;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+}
+
+.card {
+  @apply rounded-xl border border-black/10 bg-white/70 shadow-sm;
+}

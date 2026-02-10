@@ -1,0 +1,65 @@
+﻿version: "3.9"
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: routerx
+      POSTGRES_PASSWORD: routerx
+      POSTGRES_DB: routerx
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    env_file:
+      - ../.env
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+      - redis
+      - jaeger
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+    environment:
+      NEXT_PUBLIC_API_BASE: http://localhost:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.53
+    ports:
+      - "16686:16686"
+      - "4318:4318"
+
+volumes:
+  pg_data:

@@ -1,0 +1,26 @@
+﻿{
+  "id": null,
+  "title": "RouterX Overview",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Requests Per Second",
+      "targets": [
+        {"expr": "rate(routerx_requests_total[1m])", "refId": "A"}
+      ],
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Error Rate",
+      "targets": [
+        {"expr": "rate(routerx_requests_total{status=~\"5..\"}[1m])", "refId": "A"}
+      ],
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8}
+    }
+  ]
+}
