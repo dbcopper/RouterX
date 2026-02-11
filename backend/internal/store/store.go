@@ -35,9 +35,11 @@ type RoutingRule struct {
 }
 
 type Tenant struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
-	BalanceUSD float64 `json:"balance_usd"`
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	BalanceUSD float64    `json:"balance_usd"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastActive *time.Time `json:"last_active"`
 }
 
 type APIKey struct {
@@ -76,9 +78,9 @@ func New(db *pgxpool.Pool) *Store {
 }
 
 func (s *Store) GetTenantByAPIKey(ctx context.Context, key string) (*Tenant, error) {
-	row := s.DB.QueryRow(ctx, `SELECT t.id, t.name, t.balance_usd FROM api_keys k JOIN tenants t ON k.tenant_id=t.id WHERE k.key=$1`, key)
+	row := s.DB.QueryRow(ctx, `SELECT t.id, t.name, t.balance_usd, t.created_at, t.last_active FROM api_keys k JOIN tenants t ON k.tenant_id=t.id WHERE k.key=$1`, key)
 	var t Tenant
-	if err := row.Scan(&t.ID, &t.Name, &t.BalanceUSD); err != nil {
+	if err := row.Scan(&t.ID, &t.Name, &t.BalanceUSD, &t.CreatedAt, &t.LastActive); err != nil {
 		return nil, err
 	}
 	return &t, nil
@@ -120,9 +122,9 @@ func (s *Store) GetProviderByID(ctx context.Context, id string) (*Provider, erro
 }
 
 func (s *Store) GetTenantByID(ctx context.Context, id string) (*Tenant, error) {
-	row := s.DB.QueryRow(ctx, `SELECT id, name, balance_usd FROM tenants WHERE id=$1`, id)
+	row := s.DB.QueryRow(ctx, `SELECT id, name, balance_usd, created_at, last_active FROM tenants WHERE id=$1`, id)
 	var t Tenant
-	if err := row.Scan(&t.ID, &t.Name, &t.BalanceUSD); err != nil {
+	if err := row.Scan(&t.ID, &t.Name, &t.BalanceUSD, &t.CreatedAt, &t.LastActive); err != nil {
 		return nil, err
 	}
 	return &t, nil
@@ -183,7 +185,7 @@ func (s *Store) ListRoutingRules(ctx context.Context) ([]RoutingRule, error) {
 }
 
 func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
-	rows, err := s.DB.Query(ctx, `SELECT id, name, balance_usd FROM tenants`)
+	rows, err := s.DB.Query(ctx, `SELECT id, name, balance_usd, created_at, last_active FROM tenants ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +193,7 @@ func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
 	var tenants []Tenant
 	for rows.Next() {
 		var t Tenant
-		if err := rows.Scan(&t.ID, &t.Name, &t.BalanceUSD); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.BalanceUSD, &t.CreatedAt, &t.LastActive); err != nil {
 			return nil, err
 		}
 		tenants = append(tenants, t)
@@ -295,6 +297,11 @@ func (s *Store) AddUsageCost(ctx context.Context, tenantID, provider, model stri
 
 func (s *Store) UpdateTenantBalance(ctx context.Context, tenantID string, balance float64) error {
 	_, err := s.DB.Exec(ctx, `UPDATE tenants SET balance_usd=$2 WHERE id=$1`, tenantID, balance)
+	return err
+}
+
+func (s *Store) UpdateTenantLastActive(ctx context.Context, tenantID string, at time.Time) error {
+	_, err := s.DB.Exec(ctx, `UPDATE tenants SET last_active=$2 WHERE id=$1`, tenantID, at)
 	return err
 }
 

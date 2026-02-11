@@ -103,7 +103,7 @@ func main() {
 	router.Route("/user", func(r chi.Router) {
 		r.Post("/login", srv.TenantLogin)
 		r.Group(func(r chi.Router) {
-			r.Use(middleware.TenantUserAuth(cfg.JWTSecret))
+			r.Use(middleware.TenantUserAuth(cfg.JWTSecret, st))
 			r.Get("/profile", srv.TenantProfile)
 			r.Get("/usage", srv.TenantUsage)
 			r.Get("/api-keys", srv.TenantAPIKeys)

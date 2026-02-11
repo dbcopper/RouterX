@@ -42,6 +42,7 @@ func WithAPIKey(store *store.Store) func(http.Handler) http.Handler {
 				http.Error(w, "invalid api key", http.StatusUnauthorized)
 				return
 			}
+			_ = store.UpdateTenantLastActive(r.Context(), tenant.ID, time.Now().UTC())
 			ctx := context.WithValue(r.Context(), ctxTenant, tenant)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -102,7 +103,7 @@ func NewAdminToken(secret, username string, ttl time.Duration) (string, error) {
 
 var ErrUnauthorized = errors.New("unauthorized")
 
-func TenantUserAuth(secret string) func(http.Handler) http.Handler {
+func TenantUserAuth(secret string, st *store.Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			auth := r.Header.Get("Authorization")
@@ -121,6 +122,9 @@ func TenantUserAuth(secret string) func(http.Handler) http.Handler {
 			}
 			ctx := context.WithValue(r.Context(), ctxRole, "tenant")
 			ctx = context.WithValue(ctx, ctxUser, &store.TenantUser{TenantID: claims.TenantID, Username: claims.Username})
+			if st != nil {
+				_ = st.UpdateTenantLastActive(r.Context(), claims.TenantID, time.Now().UTC())
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

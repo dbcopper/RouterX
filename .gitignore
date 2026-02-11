@@ -12,3 +12,4 @@ frontend/out/
 backend/bin/
 *.log
 .DS_Store
+demo.py

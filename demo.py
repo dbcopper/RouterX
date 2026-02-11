@@ -1,10 +1,7 @@
-import os
 import requests
 
 url = "http://localhost:8080/v1/chat/completions"
-api_key = os.getenv("ROUTERX_API_KEY", "")
-if not api_key:
-    raise SystemExit("Missing ROUTERX_API_KEY env var")
+api_key = "user_key_39VSSxepGKcvWy68YF76eXerwBS"
 
 payload = {
     "model": "gemini-2.5-flash",
