@@ -18,7 +18,7 @@ type Provider struct {
 	Name           string `json:"name"`
 	Type           string `json:"type"`
 	BaseURL        string `json:"base_url"`
-	APIKey         string `json:"api_key"`
+	APIKey         string `json:"-"`
 	DefaultModel   string `json:"default_model"`
 	SupportsText   bool   `json:"supports_text"`
 	SupportsVision bool   `json:"supports_vision"`
@@ -35,13 +35,17 @@ type RoutingRule struct {
 }
 
 type Tenant struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	BalanceUSD float64 `json:"balance_usd"`
 }
 
 type APIKey struct {
-	Key      string
-	TenantID string
+	Key           string    `json:"key"`
+	TenantID      string    `json:"tenant_id"`
+	Name          string    `json:"name"`
+	AllowedModels []string  `json:"allowed_models"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type AdminUser struct {
@@ -50,21 +54,47 @@ type AdminUser struct {
 	PasswordHash string
 }
 
+type TenantUser struct {
+	ID           string
+	TenantID     string
+	Username     string
+	PasswordHash string
+}
+
+type ModelPricing struct {
+	Model        string  `json:"model"`
+	PricePer1KUSD float64 `json:"price_per_1k_usd"`
+}
+
+type ModelCatalog struct {
+	Model        string `json:"model"`
+	ProviderType string `json:"provider_type"`
+}
+
 func New(db *pgxpool.Pool) *Store {
 	return &Store{DB: db}
 }
 
 func (s *Store) GetTenantByAPIKey(ctx context.Context, key string) (*Tenant, error) {
-	row := s.DB.QueryRow(ctx, `SELECT t.id, t.name FROM api_keys k JOIN tenants t ON k.tenant_id=t.id WHERE k.key=$1`, key)
+	row := s.DB.QueryRow(ctx, `SELECT t.id, t.name, t.balance_usd FROM api_keys k JOIN tenants t ON k.tenant_id=t.id WHERE k.key=$1`, key)
 	var t Tenant
-	if err := row.Scan(&t.ID, &t.Name); err != nil {
+	if err := row.Scan(&t.ID, &t.Name, &t.BalanceUSD); err != nil {
 		return nil, err
 	}
 	return &t, nil
 }
 
+func (s *Store) GetAPIKey(ctx context.Context, key string) (*APIKey, error) {
+	row := s.DB.QueryRow(ctx, `SELECT key, tenant_id, COALESCE(name,''), COALESCE(allowed_models, ARRAY[]::text[]), created_at FROM api_keys WHERE key=$1`, key)
+	var k APIKey
+	if err := row.Scan(&k.Key, &k.TenantID, &k.Name, &k.AllowedModels, &k.CreatedAt); err != nil {
+		return nil, err
+	}
+	return &k, nil
+}
+
 func (s *Store) GetProviders(ctx context.Context) ([]Provider, error) {
-	rows, err := s.DB.Query(ctx, `SELECT id, name, type, base_url, api_key, default_model, supports_text, supports_vision, enabled FROM providers`)
+	rows, err := s.DB.Query(ctx, `SELECT id, name, type, COALESCE(base_url,''), COALESCE(api_key,''), default_model, supports_text, supports_vision, enabled FROM providers`)
 	if err != nil {
 		return nil, err
 	}
@@ -81,12 +111,21 @@ func (s *Store) GetProviders(ctx context.Context) ([]Provider, error) {
 }
 
 func (s *Store) GetProviderByID(ctx context.Context, id string) (*Provider, error) {
-	row := s.DB.QueryRow(ctx, `SELECT id, name, type, base_url, api_key, default_model, supports_text, supports_vision, enabled FROM providers WHERE id=$1`, id)
+	row := s.DB.QueryRow(ctx, `SELECT id, name, type, COALESCE(base_url,''), COALESCE(api_key,''), default_model, supports_text, supports_vision, enabled FROM providers WHERE id=$1`, id)
 	var p Provider
 	if err := row.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &p.APIKey, &p.DefaultModel, &p.SupportsText, &p.SupportsVision, &p.Enabled); err != nil {
 		return nil, err
 	}
 	return &p, nil
+}
+
+func (s *Store) GetTenantByID(ctx context.Context, id string) (*Tenant, error) {
+	row := s.DB.QueryRow(ctx, `SELECT id, name, balance_usd FROM tenants WHERE id=$1`, id)
+	var t Tenant
+	if err := row.Scan(&t.ID, &t.Name, &t.BalanceUSD); err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
 func (s *Store) GetRoutingRule(ctx context.Context, tenantID, capability string) (*RoutingRule, error) {
@@ -99,8 +138,8 @@ func (s *Store) GetRoutingRule(ctx context.Context, tenantID, capability string)
 }
 
 func (s *Store) InsertRequestLog(ctx context.Context, log models.RequestLog) error {
-	_, err := s.DB.Exec(ctx, `INSERT INTO request_logs (tenant_id, provider, model, latency_ms, ttft_ms, tokens, prompt_hash, fallback_used, status_code, error_code, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)` ,
-		log.TenantID, log.Provider, log.Model, log.LatencyMS, log.TTFTMS, log.Tokens, log.PromptHash, log.FallbackUsed, log.StatusCode, log.ErrorCode, log.CreatedAt)
+	_, err := s.DB.Exec(ctx, `INSERT INTO request_logs (tenant_id, provider, model, latency_ms, ttft_ms, tokens, cost_usd, prompt_hash, fallback_used, status_code, error_code, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)` ,
+		log.TenantID, log.Provider, log.Model, log.LatencyMS, log.TTFTMS, log.Tokens, log.CostUSD, log.PromptHash, log.FallbackUsed, log.StatusCode, log.ErrorCode, log.CreatedAt)
 	return err
 }
 
@@ -108,6 +147,15 @@ func (s *Store) GetAdminByUsername(ctx context.Context, username string) (*Admin
 	row := s.DB.QueryRow(ctx, `SELECT id, username, password_hash FROM admin_users WHERE username=$1`, username)
 	var u AdminUser
 	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash); err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (s *Store) GetTenantUserByUsername(ctx context.Context, username string) (*TenantUser, error) {
+	row := s.DB.QueryRow(ctx, `SELECT id, tenant_id, username, password_hash FROM tenant_users WHERE username=$1`, username)
+	var u TenantUser
+	if err := row.Scan(&u.ID, &u.TenantID, &u.Username, &u.PasswordHash); err != nil {
 		return nil, err
 	}
 	return &u, nil
@@ -135,7 +183,7 @@ func (s *Store) ListRoutingRules(ctx context.Context) ([]RoutingRule, error) {
 }
 
 func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
-	rows, err := s.DB.Query(ctx, `SELECT id, name FROM tenants`)
+	rows, err := s.DB.Query(ctx, `SELECT id, name, balance_usd FROM tenants`)
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +191,7 @@ func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
 	var tenants []Tenant
 	for rows.Next() {
 		var t Tenant
-		if err := rows.Scan(&t.ID, &t.Name); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.BalanceUSD); err != nil {
 			return nil, err
 		}
 		tenants = append(tenants, t)
@@ -151,8 +199,25 @@ func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
 	return tenants, rows.Err()
 }
 
+func (s *Store) ListAPIKeysByTenant(ctx context.Context, tenantID string) ([]APIKey, error) {
+	rows, err := s.DB.Query(ctx, `SELECT key, tenant_id, COALESCE(name,''), COALESCE(allowed_models, ARRAY[]::text[]), created_at FROM api_keys WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keys []APIKey
+	for rows.Next() {
+		var k APIKey
+		if err := rows.Scan(&k.Key, &k.TenantID, &k.Name, &k.AllowedModels, &k.CreatedAt); err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
 func (s *Store) ListRequestLogs(ctx context.Context, limit int) ([]models.RequestLog, error) {
-	rows, err := s.DB.Query(ctx, `SELECT tenant_id, provider, model, latency_ms, ttft_ms, tokens, prompt_hash, fallback_used, status_code, error_code, created_at FROM request_logs ORDER BY created_at DESC LIMIT $1`, limit)
+	rows, err := s.DB.Query(ctx, `SELECT tenant_id, provider, model, latency_ms, ttft_ms, tokens, cost_usd, prompt_hash, fallback_used, status_code, error_code, created_at FROM request_logs ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +225,7 @@ func (s *Store) ListRequestLogs(ctx context.Context, limit int) ([]models.Reques
 	var logs []models.RequestLog
 	for rows.Next() {
 		var l models.RequestLog
-		if err := rows.Scan(&l.TenantID, &l.Provider, &l.Model, &l.LatencyMS, &l.TTFTMS, &l.Tokens, &l.PromptHash, &l.FallbackUsed, &l.StatusCode, &l.ErrorCode, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.TenantID, &l.Provider, &l.Model, &l.LatencyMS, &l.TTFTMS, &l.Tokens, &l.CostUSD, &l.PromptHash, &l.FallbackUsed, &l.StatusCode, &l.ErrorCode, &l.CreatedAt); err != nil {
 			return nil, err
 		}
 		logs = append(logs, l)
@@ -173,6 +238,12 @@ func (s *Store) UpsertProvider(ctx context.Context, p Provider) error {
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 	ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, type=EXCLUDED.type, base_url=EXCLUDED.base_url, api_key=EXCLUDED.api_key, default_model=EXCLUDED.default_model, supports_text=EXCLUDED.supports_text, supports_vision=EXCLUDED.supports_vision, enabled=EXCLUDED.enabled`,
 		p.ID, p.Name, p.Type, p.BaseURL, p.APIKey, p.DefaultModel, p.SupportsText, p.SupportsVision, p.Enabled)
+	return err
+}
+
+func (s *Store) UpdateProvider(ctx context.Context, p Provider) error {
+	_, err := s.DB.Exec(ctx, `UPDATE providers SET base_url=$2, api_key=$3, default_model=$4, supports_text=$5, supports_vision=$6, enabled=$7 WHERE id=$1`,
+		p.ID, p.BaseURL, p.APIKey, p.DefaultModel, p.SupportsText, p.SupportsVision, p.Enabled)
 	return err
 }
 
@@ -192,13 +263,77 @@ func (s *Store) CreateTenant(ctx context.Context, t Tenant) error {
 	return err
 }
 
+func (s *Store) CreateTenantUser(ctx context.Context, u TenantUser) error {
+	_, err := s.DB.Exec(ctx, `INSERT INTO tenant_users (id, tenant_id, username, password_hash) VALUES ($1,$2,$3,$4)`, u.ID, u.TenantID, u.Username, u.PasswordHash)
+	return err
+}
+
 func (s *Store) CreateAPIKey(ctx context.Context, k APIKey) error {
-	_, err := s.DB.Exec(ctx, `INSERT INTO api_keys (key, tenant_id) VALUES ($1,$2) ON CONFLICT (key) DO NOTHING`, k.Key, k.TenantID)
+	if k.CreatedAt.IsZero() {
+		k.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.DB.Exec(ctx, `INSERT INTO api_keys (key, tenant_id, name, allowed_models, created_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (key) DO NOTHING`, k.Key, k.TenantID, k.Name, k.AllowedModels, k.CreatedAt)
+	return err
+}
+
+func (s *Store) DeleteAPIKey(ctx context.Context, tenantID, key string) error {
+	_, err := s.DB.Exec(ctx, `DELETE FROM api_keys WHERE key=$1 AND tenant_id=$2`, key, tenantID)
 	return err
 }
 
 func (s *Store) RecordUsageDaily(ctx context.Context, tenantID, provider, model string, tokens int, day time.Time) error {
-	_, err := s.DB.Exec(ctx, `INSERT INTO usage_daily (tenant_id, provider, model, day, tokens) VALUES ($1,$2,$3,$4,$5)
-	ON CONFLICT (tenant_id, provider, model, day) DO UPDATE SET tokens = usage_daily.tokens + EXCLUDED.tokens`, tenantID, provider, model, day, tokens)
+	_, err := s.DB.Exec(ctx, `INSERT INTO usage_daily (tenant_id, provider, model, day, tokens, cost_usd) VALUES ($1,$2,$3,$4,$5,$6)
+	ON CONFLICT (tenant_id, provider, model, day) DO UPDATE SET tokens = usage_daily.tokens + EXCLUDED.tokens, cost_usd = usage_daily.cost_usd + EXCLUDED.cost_usd`, tenantID, provider, model, day, tokens, 0)
 	return err
+}
+
+func (s *Store) AddUsageCost(ctx context.Context, tenantID, provider, model string, tokens int, cost float64, day time.Time) error {
+	_, err := s.DB.Exec(ctx, `INSERT INTO usage_daily (tenant_id, provider, model, day, tokens, cost_usd) VALUES ($1,$2,$3,$4,$5,$6)
+	ON CONFLICT (tenant_id, provider, model, day) DO UPDATE SET tokens = usage_daily.tokens + EXCLUDED.tokens, cost_usd = usage_daily.cost_usd + EXCLUDED.cost_usd`, tenantID, provider, model, day, tokens, cost)
+	return err
+}
+
+func (s *Store) UpdateTenantBalance(ctx context.Context, tenantID string, balance float64) error {
+	_, err := s.DB.Exec(ctx, `UPDATE tenants SET balance_usd=$2 WHERE id=$1`, tenantID, balance)
+	return err
+}
+
+func (s *Store) ListModelPricing(ctx context.Context) ([]ModelPricing, error) {
+	rows, err := s.DB.Query(ctx, `SELECT model, price_per_1k_usd FROM model_pricing ORDER BY model`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []ModelPricing
+	for rows.Next() {
+		var m ModelPricing
+		if err := rows.Scan(&m.Model, &m.PricePer1KUSD); err != nil {
+			return nil, err
+		}
+		list = append(list, m)
+	}
+	return list, rows.Err()
+}
+
+func (s *Store) UpsertModelPricing(ctx context.Context, m ModelPricing) error {
+	_, err := s.DB.Exec(ctx, `INSERT INTO model_pricing (model, price_per_1k_usd) VALUES ($1,$2) ON CONFLICT (model) DO UPDATE SET price_per_1k_usd=EXCLUDED.price_per_1k_usd`, m.Model, m.PricePer1KUSD)
+	return err
+}
+
+func (s *Store) GetModelPrice(ctx context.Context, model string) (float64, bool, error) {
+	row := s.DB.QueryRow(ctx, `SELECT price_per_1k_usd FROM model_pricing WHERE model=$1`, model)
+	var price float64
+	if err := row.Scan(&price); err != nil {
+		return 0, false, err
+	}
+	return price, true, nil
+}
+
+func (s *Store) GetModelProvider(ctx context.Context, model string) (string, bool, error) {
+	row := s.DB.QueryRow(ctx, `SELECT provider_type FROM model_catalog WHERE model=$1`, model)
+	var p string
+	if err := row.Scan(&p); err != nil {
+		return "", false, err
+	}
+	return p, true, nil
 }

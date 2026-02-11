@@ -85,7 +85,22 @@ func (r *Router) Route(ctx context.Context, tenantID string, req models.ChatComp
 	if req.Model == "" {
 		req.Model = rule.Model
 	}
-	primary, err := r.Store.GetProviderByID(ctx, rule.PrimaryProviderID)
+	primaryID := rule.PrimaryProviderID
+	secondaryID := rule.SecondaryProviderID
+	if inferredType, ok, _ := r.Store.GetModelProvider(ctx, req.Model); ok && inferredType != "" {
+		if prov, ok := r.pickProviderByType(ctx, inferredType, capability); ok {
+			primaryID = prov.ID
+			// Only allow fallback within the same provider type when a model is explicitly mapped.
+			if secondaryID != "" {
+				if sec, err := r.Store.GetProviderByID(ctx, secondaryID); err == nil {
+					if sec.Type != inferredType {
+						secondaryID = ""
+					}
+				}
+			}
+		}
+	}
+	primary, err := r.Store.GetProviderByID(ctx, primaryID)
 	if err != nil {
 		return models.ChatCompletionResponse{}, "", false, 0, 0, err
 	}
@@ -93,10 +108,10 @@ func (r *Router) Route(ctx context.Context, tenantID string, req models.ChatComp
 	if err == nil {
 		return resp, provider, usedFallback, ttft, tokens, nil
 	}
-	if rule.SecondaryProviderID == "" {
+	if secondaryID == "" {
 		return models.ChatCompletionResponse{}, primary.Name, false, ttft, tokens, err
 	}
-	secondary, err2 := r.Store.GetProviderByID(ctx, rule.SecondaryProviderID)
+	secondary, err2 := r.Store.GetProviderByID(ctx, secondaryID)
 	if err2 != nil {
 		return models.ChatCompletionResponse{}, primary.Name, false, ttft, tokens, err
 	}
@@ -143,4 +158,24 @@ func requestHasImage(req models.ChatCompletionRequest) bool {
 		}
 	}
 	return false
+}
+
+func (r *Router) pickProviderByType(ctx context.Context, providerType, capability string) (*store.Provider, bool) {
+	providersList, err := r.Store.GetProviders(ctx)
+	if err != nil {
+		return nil, false
+	}
+	for _, p := range providersList {
+		if !p.Enabled || p.Type != providerType {
+			continue
+		}
+		if capability == "vision" && !p.SupportsVision {
+			continue
+		}
+		if capability == "text" && !p.SupportsText {
+			continue
+		}
+		return &p, true
+	}
+	return nil, false
 }

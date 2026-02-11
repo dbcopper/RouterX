@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"routerx/internal/models"
@@ -125,6 +126,65 @@ type geminiProvider struct{ baseProvider }
 
 type genericOpenAIProvider struct{ baseProvider }
 
+type geminiPart struct {
+	Text string `json:"text,omitempty"`
+}
+
+type geminiContent struct {
+	Role  string       `json:"role,omitempty"`
+	Parts []geminiPart `json:"parts"`
+}
+
+type geminiResponse struct {
+	Candidates []struct {
+		Content struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"content"`
+	} `json:"candidates"`
+	UsageMetadata struct {
+		PromptTokenCount     int `json:"promptTokenCount"`
+		CandidatesTokenCount int `json:"candidatesTokenCount"`
+		TotalTokenCount      int `json:"totalTokenCount"`
+	} `json:"usageMetadata"`
+}
+
+func toGeminiContents(messages []models.Message) []geminiContent {
+	contents := make([]geminiContent, 0, len(messages))
+	for _, msg := range messages {
+		role := "user"
+		switch msg.Role {
+		case "assistant":
+			role = "model"
+		case "system":
+			role = "user"
+		default:
+			role = "user"
+		}
+
+		parts := make([]geminiPart, 0, len(msg.Content))
+		for i, part := range msg.Content {
+			if part.Type == "" || part.Type == "text" {
+				text := part.Text
+				if msg.Role == "system" && i == 0 && text != "" {
+					text = "System: " + text
+				}
+				parts = append(parts, geminiPart{Text: text})
+				continue
+			}
+			if part.Type == "image_url" && part.ImageURL != "" {
+				parts = append(parts, geminiPart{Text: "[image] " + part.ImageURL})
+			}
+		}
+		if len(parts) == 0 {
+			parts = append(parts, geminiPart{Text: ""})
+		}
+		contents = append(contents, geminiContent{Role: role, Parts: parts})
+	}
+	return contents
+}
+
 func (p *openAIProvider) Chat(ctx context.Context, req models.ChatCompletionRequest, stream bool, send StreamSender) (models.ChatCompletionResponse, time.Duration, int, error) {
 	if !p.enableReal {
 		return p.chatDummy(stream, send, req)
@@ -208,29 +268,97 @@ func (p *geminiProvider) Chat(ctx context.Context, req models.ChatCompletionRequ
 	if !p.enableReal {
 		return p.chatDummy(stream, send, req)
 	}
-	url := "https://generativelanguage.googleapis.com/v1beta/models/" + req.Model + ":generateContent"
+	apiKey := p.info.APIKey
 	payload := map[string]interface{}{
-		"contents": req.Messages,
+		"contents": toGeminiContents(req.Messages),
 	}
-	body, _ := json.Marshal(payload)
-	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	httpReq.Header.Set("Content-Type", "application/json")
+	if req.MaxTokens > 0 || req.Temperature > 0 {
+		gen := map[string]interface{}{}
+		if req.MaxTokens > 0 {
+			gen["maxOutputTokens"] = req.MaxTokens
+		}
+		if req.Temperature > 0 {
+			gen["temperature"] = req.Temperature
+		}
+		payload["generationConfig"] = gen
+	}
+
+	makeRequest := func(model string) (*http.Response, error) {
+		url := "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent"
+		if apiKey != "" {
+			url = url + "?key=" + apiKey
+		}
+		body, _ := json.Marshal(payload)
+		httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		httpReq.Header.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			httpReq.Header.Set("x-goog-api-key", apiKey)
+		}
+		return p.httpClient.Do(httpReq)
+	}
+
 	start := time.Now()
-	res, err := p.httpClient.Do(httpReq)
+	modelName := req.Model
+	res, err := makeRequest(modelName)
 	if err != nil {
 		return models.ChatCompletionResponse{}, 0, 0, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode >= 300 {
 		b, _ := io.ReadAll(res.Body)
-		return models.ChatCompletionResponse{}, time.Since(start), 0, errors.New(string(b))
+		body := string(b)
+		if strings.Contains(body, "not found") && !strings.HasSuffix(modelName, "-latest") {
+			_ = res.Body.Close()
+			res2, err2 := makeRequest(modelName + "-latest")
+			if err2 != nil {
+				return models.ChatCompletionResponse{}, time.Since(start), 0, err2
+			}
+			defer res2.Body.Close()
+			if res2.StatusCode >= 300 {
+				b2, _ := io.ReadAll(res2.Body)
+				return models.ChatCompletionResponse{}, time.Since(start), 0, errors.New(string(b2))
+			}
+		} else {
+			return models.ChatCompletionResponse{}, time.Since(start), 0, errors.New(body)
+		}
+	}
+	bodyBytes, err := io.ReadAll(res.Body)
+	if err != nil {
+		return models.ChatCompletionResponse{}, time.Since(start), 0, err
+	}
+	var g geminiResponse
+	if err := json.Unmarshal(bodyBytes, &g); err != nil {
+		return models.ChatCompletionResponse{}, time.Since(start), 0, err
+	}
+	text := ""
+	if len(g.Candidates) > 0 {
+		for _, p := range g.Candidates[0].Content.Parts {
+			if p.Text != "" {
+				if text != "" {
+					text += "\n"
+				}
+				text += p.Text
+			}
+		}
+	}
+	if text == "" {
+		text = "(empty gemini response)"
+	}
+	usage := models.Usage{
+		PromptTokens:     g.UsageMetadata.PromptTokenCount,
+		CompletionTokens: g.UsageMetadata.CandidatesTokenCount,
+		TotalTokens:      g.UsageMetadata.TotalTokenCount,
+	}
+	if usage.TotalTokens == 0 {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 	out := models.ChatCompletionResponse{
 		ID:      fmt.Sprintf("gemini_%d", time.Now().UnixNano()),
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		Model:   req.Model,
-		Choices: []models.Choice{{Index: 0, Message: models.AssistantMessage{Role: "assistant", Content: []models.ContentPart{{Type: "text", Text: "(gemini response normalized)"}}}, Finish: "stop"}},
+		Choices: []models.Choice{{Index: 0, Message: models.AssistantMessage{Role: "assistant", Content: []models.ContentPart{{Type: "text", Text: text}}}, Finish: "stop"}},
+		Usage:   usage,
 	}
 	return out, time.Since(start), out.Usage.TotalTokens, nil
 }

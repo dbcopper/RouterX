@@ -71,6 +71,7 @@ curl http://localhost:8080/v1/chat/completions \
 ## Admin Console
 - Login via `http://localhost:3000/login`.
 - Default admin: `admin` / `admin123` (local only; change in seed or DB).
+- Default user: `demo` / `demo123` (local only; change in seed or DB).
 - Providers, routing rules, tenants, and request logs are visible in the UI.
 
 ## Configuration

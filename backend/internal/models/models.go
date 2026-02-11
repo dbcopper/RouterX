@@ -64,6 +64,7 @@ type RequestLog struct {
 	LatencyMS    int64     `json:"latency_ms"`
 	TTFTMS       int64     `json:"ttft_ms"`
 	Tokens       int       `json:"tokens"`
+	CostUSD      float64   `json:"cost_usd"`
 	PromptHash   string    `json:"prompt_hash"`
 	FallbackUsed bool      `json:"fallback_used"`
 	StatusCode   int       `json:"status_code"`

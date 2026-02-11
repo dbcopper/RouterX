@@ -13,7 +13,8 @@ export default function DashboardPage() {
     const token = localStorage.getItem('routerx_token') || '';
     apiGet('/admin/requests', token)
       .then((logs) => {
-        const mapped = logs.slice(0, 10).map((l: any, idx: number) => ({
+        const list = Array.isArray(logs) ? logs : [];
+        const mapped = list.slice(0, 10).map((l: any, idx: number) => ({
           name: `-${idx + 1}`,
           latency: l.latency_ms || 0,
           tokens: l.tokens || 0

@@ -85,9 +85,30 @@ func main() {
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.AdminAuth(cfg.JWTSecret))
 			r.Get("/providers", srv.AdminProviders)
-			r.Get("/routing-rules", srv.AdminRoutingRules)
+			r.Post("/providers", srv.AdminCreateProvider)
+			r.Put("/providers/{id}", srv.AdminUpdateProvider)
 			r.Get("/tenants", srv.AdminTenants)
+			r.Put("/tenants/{id}/balance", srv.AdminUpdateTenantBalance)
 			r.Get("/requests", srv.AdminRequests)
+			r.Get("/model-pricing", srv.AdminListModelPricing)
+			r.Post("/model-pricing", srv.AdminUpsertModelPricing)
+		})
+	})
+
+	router.Route("/auth", func(r chi.Router) {
+		r.Post("/login", srv.AuthLogin)
+		r.Post("/register", srv.AuthRegister)
+	})
+
+	router.Route("/user", func(r chi.Router) {
+		r.Post("/login", srv.TenantLogin)
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.TenantUserAuth(cfg.JWTSecret))
+			r.Get("/profile", srv.TenantProfile)
+			r.Get("/usage", srv.TenantUsage)
+			r.Get("/api-keys", srv.TenantAPIKeys)
+			r.Post("/api-keys", srv.TenantCreateAPIKey)
+			r.Delete("/api-keys/{key}", srv.TenantDeleteAPIKey)
 		})
 	})
 

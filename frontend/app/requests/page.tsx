@@ -11,7 +11,7 @@ export default function RequestsPage() {
   useEffect(() => {
     const token = localStorage.getItem('routerx_token') || '';
     apiGet('/admin/requests', token)
-      .then(setItems)
+      .then((logs) => setItems(Array.isArray(logs) ? logs : []))
       .catch((err) => setError(err.message || 'Failed to load'));
   }, []);
 
@@ -30,7 +30,8 @@ export default function RequestsPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left border-b">
-                <th className="py-2">Tenant</th>
+                <th className="py-2">Time</th>
+                <th>Tenant</th>
                 <th>Provider</th>
                 <th>Model</th>
                 <th>Latency (ms)</th>
@@ -41,7 +42,8 @@ export default function RequestsPage() {
             <tbody>
               {items.map((l, idx) => (
                 <tr key={idx} className="border-b last:border-0">
-                  <td className="py-2">{l.tenant_id}</td>
+                  <td className="py-2">{l.created_at ? new Date(l.created_at).toLocaleString() : '-'}</td>
+                  <td>{l.tenant_id}</td>
                   <td>{l.provider}</td>
                   <td>{l.model}</td>
                   <td>{l.latency_ms}</td>

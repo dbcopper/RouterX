@@ -15,6 +15,8 @@ type contextKey string
 
 const (
 	ctxTenant contextKey = "tenant"
+	ctxUser   contextKey = "tenant_user"
+	ctxRole   contextKey = "role"
 )
 
 func TenantFromContext(ctx context.Context) *store.Tenant {
@@ -46,8 +48,19 @@ func WithAPIKey(store *store.Store) func(http.Handler) http.Handler {
 	}
 }
 
+func TenantUserFromContext(ctx context.Context) *store.TenantUser {
+	val := ctx.Value(ctxUser)
+	if val == nil {
+		return nil
+	}
+	user, _ := val.(*store.TenantUser)
+	return user
+}
+
 type Claims struct {
 	Username string `json:"username"`
+	Role     string `json:"role"`
+	TenantID string `json:"tenant_id,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -64,11 +77,11 @@ func AdminAuth(secret string) func(http.Handler) http.Handler {
 			token, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
 				return []byte(secret), nil
 			})
-			if err != nil || !token.Valid || claims.ExpiresAt == nil || claims.ExpiresAt.Time.Before(time.Now()) {
+			if err != nil || !token.Valid || claims.ExpiresAt == nil || claims.ExpiresAt.Time.Before(time.Now()) || claims.Role != "admin" {
 				http.Error(w, "invalid token", http.StatusUnauthorized)
 				return
 			}
-			ctx := context.WithValue(r.Context(), contextKey("admin"), claims.Username)
+			ctx := context.WithValue(r.Context(), ctxRole, "admin")
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -77,6 +90,7 @@ func AdminAuth(secret string) func(http.Handler) http.Handler {
 func NewAdminToken(secret, username string, ttl time.Duration) (string, error) {
 	claims := Claims{
 		Username: username,
+		Role:     "admin",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -87,3 +101,41 @@ func NewAdminToken(secret, username string, ttl time.Duration) (string, error) {
 }
 
 var ErrUnauthorized = errors.New("unauthorized")
+
+func TenantUserAuth(secret string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			auth := r.Header.Get("Authorization")
+			if !strings.HasPrefix(auth, "Bearer ") {
+				http.Error(w, "missing token", http.StatusUnauthorized)
+				return
+			}
+			tokenStr := strings.TrimPrefix(auth, "Bearer ")
+			claims := &Claims{}
+			token, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
+				return []byte(secret), nil
+			})
+			if err != nil || !token.Valid || claims.ExpiresAt == nil || claims.ExpiresAt.Time.Before(time.Now()) || claims.Role != "tenant" {
+				http.Error(w, "invalid token", http.StatusUnauthorized)
+				return
+			}
+			ctx := context.WithValue(r.Context(), ctxRole, "tenant")
+			ctx = context.WithValue(ctx, ctxUser, &store.TenantUser{TenantID: claims.TenantID, Username: claims.Username})
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+func NewTenantToken(secret, username, tenantID string, ttl time.Duration) (string, error) {
+	claims := Claims{
+		Username: username,
+		Role:     "tenant",
+		TenantID: tenantID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(secret))
+}

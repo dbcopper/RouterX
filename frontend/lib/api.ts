@@ -21,3 +21,25 @@ export async function apiPost(path: string, body: unknown, token?: string) {
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+export async function apiPut(path: string, body: unknown, token?: string) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function apiDelete(path: string, token?: string) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'DELETE',
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}

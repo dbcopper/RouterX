@@ -1,4 +1,4 @@
-﻿import Link from 'next/link';
+import Link from 'next/link';
 
 export default function Home() {
   return (
@@ -9,8 +9,8 @@ export default function Home() {
           Manage providers, routing rules, tenants, and request telemetry for your multi-provider gateway.
         </p>
         <div className="mt-6 flex gap-3">
-          <Link className="px-4 py-2 rounded-lg bg-ink text-white" href="/dashboard">Open Dashboard</Link>
-          <Link className="px-4 py-2 rounded-lg border border-black/10" href="/login">Admin Login</Link>
+          <Link className="px-4 py-2 rounded-lg bg-ink text-white" href="/login">Login</Link>
+          <Link className="px-4 py-2 rounded-lg border border-black/10" href="/dashboard">Admin Dashboard</Link>
         </div>
       </div>
     </main>
