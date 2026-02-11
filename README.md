@@ -1,21 +1,24 @@
-ï»¿# RouterX
+# RouterX
 
-RouterX is a provider-agnostic LLM/VLM gateway and router with a web-based Admin Console. It exposes a single Chat Completions-style API and routes requests across multiple providers with capability-aware fallbacks.
+RouterX is a provider-agnostic LLM/VLM gateway and router with a web-based Admin Console. It exposes a single Chat Completions-style API and routes requests across multiple providers with capability-aware fallbacks. This is AI infrastructure: a control plane for routing, auth, observability, and billing across model providers.
 
-## 5-minute Run
-1. Copy env and start services:
+## Quick Start (Docker)
+1. Copy env:
    ```bash
    cp .env.example .env
-   make up
    ```
-2. Run migrations and seed demo data:
+2. Start services:
    ```bash
-   make migrate
-   make seed
+   docker compose -f deploy/docker-compose.yml up -d --build
    ```
-3. Open the UI: `http://localhost:3000`
-4. Grafana: `http://localhost:3001` (default admin/admin)
-5. Jaeger: `http://localhost:16686`
+3. Run migrations and seed demo data:
+   ```bash
+   docker compose -f deploy/docker-compose.yml exec -T backend /routerx migrate
+   docker compose -f deploy/docker-compose.yml exec -T backend /routerx seed
+   ```
+4. Open the UI: `http://localhost:3000`
+5. Grafana: `http://localhost:3001` (default admin/admin)
+6. Jaeger: `http://localhost:16686`
 
 > Demo API key is **fake** and for local use only: `demo_key_fake_123456`.
 
@@ -64,15 +67,15 @@ curl http://localhost:8080/v1/chat/completions \
 ```
 
 ## Routing & Fallback
-- Routing rules select primary/secondary providers per capability (`text` vs `vision`).
+- Model catalog maps model ¡ú provider type (OpenAI/Anthropic/Gemini/Generic).
 - Circuit breaker uses a sliding window error rate and cooldown.
-- If primary fails, RouterX falls back to secondary (logged in request metadata).
+- If a provider fails, RouterX can fall back within the same provider type.
 
 ## Admin Console
 - Login via `http://localhost:3000/login`.
 - Default admin: `admin` / `admin123` (local only; change in seed or DB).
 - Default user: `demo` / `demo123` (local only; change in seed or DB).
-- Providers, routing rules, tenants, and request logs are visible in the UI.
+- Providers, pricing, tenants, and request logs are visible in the UI.
 
 ## Configuration
 Key environment variables:
@@ -80,13 +83,14 @@ Key environment variables:
 - `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`.
 
 ## Security Notes
-- No real API keys are stored or shipped. Add keys via DB or environment.
+- No real API keys are stored or shipped. Add keys via the Admin UI or DB.
 - Request logs store **metadata only**, never prompt/response text.
 - `.env` is gitignored. See `.env.example` for safe defaults.
 
-## Load Test
+## Local Demo Script
 ```bash
-make loadtest
+set ROUTERX_API_KEY=demo_key_fake_123456
+python demo.py
 ```
 
 ## Project Structure
@@ -94,4 +98,3 @@ make loadtest
 - `frontend/`: Next.js Admin Console.
 - `deploy/`: Docker Compose + observability.
 - `scripts/`: seed and load test scripts.
-# RouterX
