@@ -968,13 +968,12 @@ func errCode(err error) string {
 func extractText(req models.ChatCompletionRequest) string {
 	buf := ""
 	for _, msg := range req.Messages {
-		for _, part := range msg.Content {
-			if part.Type == "text" {
-				buf += part.Text + " "
-			}
-			if part.Type == "image_url" {
-				buf += "[image] "
-			}
+		text := models.ContentText(msg.Content)
+		if text != "" {
+			buf += text + " "
+		}
+		if models.ContentHasImage(msg.Content) {
+			buf += "[image] "
 		}
 	}
 	return buf

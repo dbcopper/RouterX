@@ -207,10 +207,8 @@ func (r *Router) tryProvider(ctx context.Context, p *store.Provider, req models.
 
 func requestHasImage(req models.ChatCompletionRequest) bool {
 	for _, msg := range req.Messages {
-		for _, part := range msg.Content {
-			if part.Type == "image_url" && part.ImageURL != "" {
-				return true
-			}
+		if models.ContentHasImage(msg.Content) {
+			return true
 		}
 	}
 	return false

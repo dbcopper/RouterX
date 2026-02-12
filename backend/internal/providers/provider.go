@@ -48,9 +48,9 @@ func NewProvider(p store.Provider, enableReal bool) Provider {
 	}
 }
 
-func (b *baseProvider) Name() string           { return b.info.Name }
-func (b *baseProvider) SupportsText() bool      { return b.info.SupportsText }
-func (b *baseProvider) SupportsVision() bool    { return b.info.SupportsVision }
+func (b *baseProvider) Name() string        { return b.info.Name }
+func (b *baseProvider) SupportsText() bool   { return b.info.SupportsText }
+func (b *baseProvider) SupportsVision() bool { return b.info.SupportsVision }
 
 func dummyResponse(provider string, req models.ChatCompletionRequest) (models.ChatCompletionResponse, int) {
 	content := fmt.Sprintf("Dummy response from %s. Model=%s. Messages=%d.", provider, req.Model, len(req.Messages))
@@ -60,12 +60,9 @@ func dummyResponse(provider string, req models.ChatCompletionRequest) (models.Ch
 		Created: time.Now().Unix(),
 		Model:   req.Model,
 		Choices: []models.Choice{{
-			Index: 0,
-			Message: models.AssistantMessage{
-				Role:    "assistant",
-				Content: []models.ContentPart{{Type: "text", Text: content}},
-			},
-			Finish: "stop",
+			Index:   0,
+			Message: models.AssistantMessage{Role: "assistant", Content: models.StringPtr(content)},
+			Finish:  "stop",
 		}},
 		Usage: models.Usage{PromptTokens: 10, CompletionTokens: 15, TotalTokens: 25},
 	}
@@ -118,8 +115,9 @@ func parseOpenAIResponse(resp *http.Response, model string) (models.ChatCompleti
 		Choices []struct {
 			Index   int `json:"index"`
 			Message struct {
-				Role    string          `json:"role"`
-				Content json.RawMessage `json:"content"`
+				Role      string          `json:"role"`
+				Content   json.RawMessage `json:"content"`
+				ToolCalls json.RawMessage `json:"tool_calls,omitempty"`
 			} `json:"message"`
 			Finish string `json:"finish_reason"`
 		} `json:"choices"`
@@ -136,21 +134,13 @@ func parseOpenAIResponse(resp *http.Response, model string) (models.ChatCompleti
 		Usage:   raw.Usage,
 	}
 	for _, c := range raw.Choices {
-		msg := models.AssistantMessage{Role: c.Message.Role}
-		if len(c.Message.Content) == 0 || string(c.Message.Content) == "null" {
-			msg.Content = []models.ContentPart{}
-		} else if c.Message.Content[0] == '"' {
+		msg := models.AssistantMessage{Role: c.Message.Role, ToolCalls: c.Message.ToolCalls}
+		// Content can be a string or null
+		if len(c.Message.Content) > 0 && string(c.Message.Content) != "null" {
 			var s string
-			if err := json.Unmarshal(c.Message.Content, &s); err != nil {
-				return models.ChatCompletionResponse{}, err
+			if err := json.Unmarshal(c.Message.Content, &s); err == nil {
+				msg.Content = &s
 			}
-			msg.Content = []models.ContentPart{{Type: "text", Text: s}}
-		} else {
-			var parts []models.ContentPart
-			if err := json.Unmarshal(c.Message.Content, &parts); err != nil {
-				return models.ChatCompletionResponse{}, err
-			}
-			msg.Content = parts
 		}
 		out.Choices = append(out.Choices, models.Choice{
 			Index:   c.Index,
@@ -221,15 +211,14 @@ func handleOpenAIStream(resp *http.Response, model string, send StreamSender) (m
 		}
 	}
 
-	// Estimate tokens if the stream didn't provide usage
 	if totalTokens == 0 {
-		// Rough estimate: ~4 chars per token
 		totalTokens = len(fullText.String()) / 4
 		if totalTokens < 1 {
 			totalTokens = 1
 		}
 	}
 
+	text := fullText.String()
 	out := models.ChatCompletionResponse{
 		ID:      respID,
 		Object:  "chat.completion",
@@ -237,7 +226,7 @@ func handleOpenAIStream(resp *http.Response, model string, send StreamSender) (m
 		Model:   model,
 		Choices: []models.Choice{{
 			Index:   0,
-			Message: models.AssistantMessage{Role: "assistant", Content: []models.ContentPart{{Type: "text", Text: fullText.String()}}},
+			Message: models.AssistantMessage{Role: "assistant", Content: &text},
 			Finish:  "stop",
 		}},
 		Usage: models.Usage{TotalTokens: totalTokens},
@@ -245,7 +234,7 @@ func handleOpenAIStream(resp *http.Response, model string, send StreamSender) (m
 	return out, totalTokens, nil
 }
 
-// handleAnthropicStream reads SSE from Anthropic's streaming API
+// handleAnthropicStream reads SSE from Anthropic's streaming API and converts to OpenAI format.
 func handleAnthropicStream(resp *http.Response, model string, send StreamSender) (models.ChatCompletionResponse, int, error) {
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
@@ -285,7 +274,6 @@ func handleAnthropicStream(resp *http.Response, model string, send StreamSender)
 		case "content_block_delta":
 			if event.Delta.Text != "" {
 				fullText.WriteString(event.Delta.Text)
-				// Convert to OpenAI-compatible chunk format for client
 				chunk := fmt.Sprintf(`{"choices":[{"delta":{"content":%s}}]}`, jsonString(event.Delta.Text))
 				if send != nil {
 					if err := send(chunk); err != nil {
@@ -311,6 +299,7 @@ func handleAnthropicStream(resp *http.Response, model string, send StreamSender)
 		}
 	}
 
+	text := fullText.String()
 	out := models.ChatCompletionResponse{
 		ID:      fmt.Sprintf("anthropic_%d", time.Now().UnixNano()),
 		Object:  "chat.completion",
@@ -318,7 +307,7 @@ func handleAnthropicStream(resp *http.Response, model string, send StreamSender)
 		Model:   model,
 		Choices: []models.Choice{{
 			Index:   0,
-			Message: models.AssistantMessage{Role: "assistant", Content: []models.ContentPart{{Type: "text", Text: fullText.String()}}},
+			Message: models.AssistantMessage{Role: "assistant", Content: &text},
 			Finish:  "stop",
 		}},
 		Usage: models.Usage{TotalTokens: totalTokens},
@@ -332,12 +321,316 @@ func jsonString(s string) string {
 }
 
 type openAIProvider struct{ baseProvider }
-
 type anthropicProvider struct{ baseProvider }
-
 type geminiProvider struct{ baseProvider }
-
 type genericOpenAIProvider struct{ baseProvider }
+
+// ---- OpenAI Provider ----
+
+func (p *openAIProvider) Chat(ctx context.Context, req models.ChatCompletionRequest, stream bool, send StreamSender) (models.ChatCompletionResponse, time.Duration, int, error) {
+	if !p.enableReal {
+		return p.chatDummy(stream, send, req)
+	}
+	if p.info.APIKey == "" {
+		return models.ChatCompletionResponse{}, 0, 0, fmt.Errorf("no API key configured for provider %s (openai)", p.info.Name)
+	}
+	url := "https://api.openai.com/v1/chat/completions"
+
+	// Forward the entire request struct — all OpenAI-compatible fields are passed through
+	req.Stream = stream
+	if stream {
+		req.StreamOptions = &models.StreamOptions{IncludeUsage: true}
+	}
+
+	start := time.Now()
+	res, err := p.doOpenAIRequest(ctx, url, req, p.info.APIKey)
+	if err != nil {
+		return models.ChatCompletionResponse{}, 0, 0, err
+	}
+	defer res.Body.Close()
+
+	if stream && send != nil {
+		out, tokens, err := handleOpenAIStream(res, req.Model, send)
+		return out, time.Since(start), tokens, err
+	}
+
+	out, err := parseOpenAIResponse(res, req.Model)
+	return out, time.Since(start), out.Usage.TotalTokens, err
+}
+
+// ---- Generic OpenAI Provider ----
+
+func (p *genericOpenAIProvider) Chat(ctx context.Context, req models.ChatCompletionRequest, stream bool, send StreamSender) (models.ChatCompletionResponse, time.Duration, int, error) {
+	if !p.enableReal {
+		return p.chatDummy(stream, send, req)
+	}
+	if p.info.APIKey == "" {
+		return models.ChatCompletionResponse{}, 0, 0, fmt.Errorf("no API key configured for provider %s (generic-openai)", p.info.Name)
+	}
+	base := p.info.BaseURL
+	if base == "" {
+		return models.ChatCompletionResponse{}, 0, 0, errors.New("base_url required")
+	}
+	url := fmt.Sprintf("%s/v1/chat/completions", strings.TrimRight(base, "/"))
+
+	req.Stream = stream
+	if stream {
+		req.StreamOptions = &models.StreamOptions{IncludeUsage: true}
+	}
+
+	start := time.Now()
+	res, err := p.doOpenAIRequest(ctx, url, req, p.info.APIKey)
+	if err != nil {
+		return models.ChatCompletionResponse{}, 0, 0, err
+	}
+	defer res.Body.Close()
+
+	if stream && send != nil {
+		out, tokens, err := handleOpenAIStream(res, req.Model, send)
+		return out, time.Since(start), tokens, err
+	}
+
+	out, err := parseOpenAIResponse(res, req.Model)
+	return out, time.Since(start), out.Usage.TotalTokens, err
+}
+
+// ---- Anthropic Provider ----
+
+func (p *anthropicProvider) Chat(ctx context.Context, req models.ChatCompletionRequest, stream bool, send StreamSender) (models.ChatCompletionResponse, time.Duration, int, error) {
+	if !p.enableReal {
+		return p.chatDummy(stream, send, req)
+	}
+	if p.info.APIKey == "" {
+		return models.ChatCompletionResponse{}, 0, 0, fmt.Errorf("no API key configured for provider %s (anthropic)", p.info.Name)
+	}
+	url := "https://api.anthropic.com/v1/messages"
+
+	// Convert messages to Anthropic format
+	var system string
+	var anthropicMsgs []interface{}
+	for _, msg := range req.Messages {
+		if msg.Role == "system" {
+			system += models.ContentText(msg.Content) + "\n"
+			continue
+		}
+		// Tool result messages → Anthropic tool_result format
+		if msg.Role == "tool" {
+			anthropicMsgs = append(anthropicMsgs, map[string]interface{}{
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "tool_result", "tool_use_id": msg.ToolCallID, "content": models.ContentText(msg.Content)},
+				},
+			})
+			continue
+		}
+		// Assistant messages with tool_calls → Anthropic tool_use blocks
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 && string(msg.ToolCalls) != "null" {
+			var toolCalls []struct {
+				ID       string `json:"id"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			}
+			if err := json.Unmarshal(msg.ToolCalls, &toolCalls); err == nil {
+				content := []interface{}{}
+				text := models.ContentText(msg.Content)
+				if text != "" {
+					content = append(content, map[string]interface{}{"type": "text", "text": text})
+				}
+				for _, tc := range toolCalls {
+					var args interface{}
+					_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+					content = append(content, map[string]interface{}{
+						"type": "tool_use", "id": tc.ID, "name": tc.Function.Name, "input": args,
+					})
+				}
+				anthropicMsgs = append(anthropicMsgs, map[string]interface{}{"role": "assistant", "content": content})
+				continue
+			}
+		}
+		// Regular message
+		content := models.ContentText(msg.Content)
+		anthropicMsgs = append(anthropicMsgs, map[string]interface{}{
+			"role":    msg.Role,
+			"content": content,
+		})
+	}
+
+	// Determine max_tokens
+	maxTokens := 4096
+	if req.MaxTokens > 0 {
+		maxTokens = req.MaxTokens
+	}
+	if req.MaxCompletionTokens > 0 {
+		maxTokens = req.MaxCompletionTokens
+	}
+
+	payload := map[string]interface{}{
+		"model":      req.Model,
+		"messages":   anthropicMsgs,
+		"max_tokens": maxTokens,
+	}
+	if system != "" {
+		payload["system"] = strings.TrimSpace(system)
+	}
+	if stream {
+		payload["stream"] = true
+	}
+	if req.Temperature != nil {
+		payload["temperature"] = *req.Temperature
+	}
+	if req.TopP != nil {
+		payload["top_p"] = *req.TopP
+	}
+	if len(req.Stop) > 0 && string(req.Stop) != "null" {
+		var stop interface{}
+		if err := json.Unmarshal(req.Stop, &stop); err == nil {
+			payload["stop_sequences"] = stop
+		}
+	}
+
+	// Convert OpenAI tools to Anthropic format
+	if len(req.Tools) > 0 && string(req.Tools) != "null" {
+		var openaiTools []struct {
+			Type     string `json:"type"`
+			Function struct {
+				Name        string          `json:"name"`
+				Description string          `json:"description"`
+				Parameters  json.RawMessage `json:"parameters"`
+			} `json:"function"`
+		}
+		if err := json.Unmarshal(req.Tools, &openaiTools); err == nil {
+			var anthropicTools []map[string]interface{}
+			for _, t := range openaiTools {
+				tool := map[string]interface{}{
+					"name":         t.Function.Name,
+					"input_schema": t.Function.Parameters,
+				}
+				if t.Function.Description != "" {
+					tool["description"] = t.Function.Description
+				}
+				anthropicTools = append(anthropicTools, tool)
+			}
+			payload["tools"] = anthropicTools
+		}
+	}
+	// Convert tool_choice
+	if len(req.ToolChoice) > 0 && string(req.ToolChoice) != "null" {
+		var tc interface{}
+		if err := json.Unmarshal(req.ToolChoice, &tc); err == nil {
+			switch v := tc.(type) {
+			case string:
+				switch v {
+				case "auto":
+					payload["tool_choice"] = map[string]string{"type": "auto"}
+				case "required":
+					payload["tool_choice"] = map[string]string{"type": "any"}
+				case "none":
+					// Don't send tools
+				}
+			case map[string]interface{}:
+				if fn, ok := v["function"].(map[string]interface{}); ok {
+					if name, ok := fn["name"].(string); ok {
+						payload["tool_choice"] = map[string]interface{}{"type": "tool", "name": name}
+					}
+				}
+			}
+		}
+	}
+
+	body, _ := json.Marshal(payload)
+	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", p.info.APIKey)
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
+
+	start := time.Now()
+	res, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return models.ChatCompletionResponse{}, 0, 0, err
+	}
+	defer res.Body.Close()
+
+	if stream && send != nil {
+		out, tokens, err := handleAnthropicStream(res, req.Model, send)
+		return out, time.Since(start), tokens, err
+	}
+
+	if res.StatusCode >= 300 {
+		b, _ := io.ReadAll(res.Body)
+		return models.ChatCompletionResponse{}, time.Since(start), 0, errors.New(string(b))
+	}
+
+	var anthropicResp struct {
+		ID      string `json:"id"`
+		Type    string `json:"type"`
+		Model   string `json:"model"`
+		Content []struct {
+			Type  string          `json:"type"`
+			Text  string          `json:"text,omitempty"`
+			ID    string          `json:"id,omitempty"`
+			Name  string          `json:"name,omitempty"`
+			Input json.RawMessage `json:"input,omitempty"`
+		} `json:"content"`
+		StopReason string `json:"stop_reason"`
+		Usage      struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&anthropicResp); err != nil {
+		return models.ChatCompletionResponse{}, time.Since(start), 0, err
+	}
+
+	var text string
+	var toolCallsList []map[string]interface{}
+	for _, c := range anthropicResp.Content {
+		if c.Type == "text" {
+			text += c.Text
+		}
+		if c.Type == "tool_use" {
+			args, _ := json.Marshal(c.Input)
+			toolCallsList = append(toolCallsList, map[string]interface{}{
+				"id":   c.ID,
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":      c.Name,
+					"arguments": string(args),
+				},
+			})
+		}
+	}
+
+	totalTokens := anthropicResp.Usage.InputTokens + anthropicResp.Usage.OutputTokens
+	msg := models.AssistantMessage{Role: "assistant"}
+	if text != "" {
+		msg.Content = &text
+	}
+	if len(toolCallsList) > 0 {
+		msg.ToolCalls, _ = json.Marshal(toolCallsList)
+	}
+	finishReason := "stop"
+	if anthropicResp.StopReason == "tool_use" {
+		finishReason = "tool_calls"
+	}
+
+	out := models.ChatCompletionResponse{
+		ID:      anthropicResp.ID,
+		Object:  "chat.completion",
+		Created: time.Now().Unix(),
+		Model:   anthropicResp.Model,
+		Choices: []models.Choice{{Index: 0, Message: msg, Finish: finishReason}},
+		Usage: models.Usage{
+			PromptTokens:     anthropicResp.Usage.InputTokens,
+			CompletionTokens: anthropicResp.Usage.OutputTokens,
+			TotalTokens:      totalTokens,
+		},
+	}
+	return out, time.Since(start), totalTokens, nil
+}
+
+// ---- Gemini Provider ----
 
 type geminiPart struct {
 	Text string `json:"text,omitempty"`
@@ -376,17 +669,15 @@ func toGeminiContents(messages []models.Message) []geminiContent {
 			role = "user"
 		}
 
-		parts := make([]geminiPart, 0, len(msg.Content))
-		for i, part := range msg.Content {
+		parts := []geminiPart{}
+		for _, part := range models.ParseContentParts(msg.Content) {
 			if part.Type == "" || part.Type == "text" {
 				text := part.Text
-				if msg.Role == "system" && i == 0 && text != "" {
+				if msg.Role == "system" && text != "" {
 					text = "System: " + text
 				}
 				parts = append(parts, geminiPart{Text: text})
-				continue
-			}
-			if part.Type == "image_url" && part.ImageURL != "" {
+			} else if part.Type == "image_url" && part.ImageURL != "" {
 				parts = append(parts, geminiPart{Text: "[image] " + part.ImageURL})
 			}
 		}
@@ -396,183 +687,6 @@ func toGeminiContents(messages []models.Message) []geminiContent {
 		contents = append(contents, geminiContent{Role: role, Parts: parts})
 	}
 	return contents
-}
-
-func (p *openAIProvider) Chat(ctx context.Context, req models.ChatCompletionRequest, stream bool, send StreamSender) (models.ChatCompletionResponse, time.Duration, int, error) {
-	if !p.enableReal {
-		return p.chatDummy(stream, send, req)
-	}
-	if p.info.APIKey == "" {
-		return models.ChatCompletionResponse{}, 0, 0, fmt.Errorf("no API key configured for provider %s (openai)", p.info.Name)
-	}
-	url := "https://api.openai.com/v1/chat/completions"
-	payload := map[string]interface{}{
-		"model":    req.Model,
-		"messages": req.Messages,
-		"stream":   stream,
-	}
-	if stream {
-		payload["stream_options"] = map[string]interface{}{"include_usage": true}
-	}
-	start := time.Now()
-	res, err := p.doOpenAIRequest(ctx, url, payload, p.info.APIKey)
-	if err != nil {
-		return models.ChatCompletionResponse{}, 0, 0, err
-	}
-	defer res.Body.Close()
-
-	if stream && send != nil {
-		out, tokens, err := handleOpenAIStream(res, req.Model, send)
-		return out, time.Since(start), tokens, err
-	}
-
-	out, err := parseOpenAIResponse(res, req.Model)
-	return out, time.Since(start), out.Usage.TotalTokens, err
-}
-
-func (p *genericOpenAIProvider) Chat(ctx context.Context, req models.ChatCompletionRequest, stream bool, send StreamSender) (models.ChatCompletionResponse, time.Duration, int, error) {
-	if !p.enableReal {
-		return p.chatDummy(stream, send, req)
-	}
-	if p.info.APIKey == "" {
-		return models.ChatCompletionResponse{}, 0, 0, fmt.Errorf("no API key configured for provider %s (generic-openai)", p.info.Name)
-	}
-	base := p.info.BaseURL
-	if base == "" {
-		return models.ChatCompletionResponse{}, 0, 0, errors.New("base_url required")
-	}
-	url := fmt.Sprintf("%s/v1/chat/completions", strings.TrimRight(base, "/"))
-	payload := map[string]interface{}{
-		"model":    req.Model,
-		"messages": req.Messages,
-		"stream":   stream,
-	}
-	start := time.Now()
-	res, err := p.doOpenAIRequest(ctx, url, payload, p.info.APIKey)
-	if err != nil {
-		return models.ChatCompletionResponse{}, 0, 0, err
-	}
-	defer res.Body.Close()
-
-	if stream && send != nil {
-		out, tokens, err := handleOpenAIStream(res, req.Model, send)
-		return out, time.Since(start), tokens, err
-	}
-
-	out, err := parseOpenAIResponse(res, req.Model)
-	return out, time.Since(start), out.Usage.TotalTokens, err
-}
-
-func (p *anthropicProvider) Chat(ctx context.Context, req models.ChatCompletionRequest, stream bool, send StreamSender) (models.ChatCompletionResponse, time.Duration, int, error) {
-	if !p.enableReal {
-		return p.chatDummy(stream, send, req)
-	}
-	if p.info.APIKey == "" {
-		return models.ChatCompletionResponse{}, 0, 0, fmt.Errorf("no API key configured for provider %s (anthropic)", p.info.Name)
-	}
-	url := "https://api.anthropic.com/v1/messages"
-
-	// Convert messages to Anthropic format
-	var system string
-	var anthropicMsgs []map[string]interface{}
-	for _, msg := range req.Messages {
-		if msg.Role == "system" {
-			for _, p := range msg.Content {
-				if p.Text != "" {
-					system += p.Text + "\n"
-				}
-			}
-			continue
-		}
-		content := ""
-		for _, p := range msg.Content {
-			if p.Text != "" {
-				content += p.Text
-			}
-		}
-		anthropicMsgs = append(anthropicMsgs, map[string]interface{}{
-			"role":    msg.Role,
-			"content": content,
-		})
-	}
-
-	payload := map[string]interface{}{
-		"model":      req.Model,
-		"messages":   anthropicMsgs,
-		"max_tokens": 4096,
-	}
-	if system != "" {
-		payload["system"] = strings.TrimSpace(system)
-	}
-	if stream {
-		payload["stream"] = true
-	}
-
-	body, _ := json.Marshal(payload)
-	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", p.info.APIKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-
-	start := time.Now()
-	res, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return models.ChatCompletionResponse{}, 0, 0, err
-	}
-	defer res.Body.Close()
-
-	if stream && send != nil {
-		out, tokens, err := handleAnthropicStream(res, req.Model, send)
-		return out, time.Since(start), tokens, err
-	}
-
-	if res.StatusCode >= 300 {
-		b, _ := io.ReadAll(res.Body)
-		return models.ChatCompletionResponse{}, time.Since(start), 0, errors.New(string(b))
-	}
-
-	var anthropicResp struct {
-		ID    string `json:"id"`
-		Type  string `json:"type"`
-		Model string `json:"model"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
-	}
-	if err := json.NewDecoder(res.Body).Decode(&anthropicResp); err != nil {
-		return models.ChatCompletionResponse{}, time.Since(start), 0, err
-	}
-
-	var text string
-	for _, c := range anthropicResp.Content {
-		if c.Type == "text" {
-			text += c.Text
-		}
-	}
-
-	totalTokens := anthropicResp.Usage.InputTokens + anthropicResp.Usage.OutputTokens
-	out := models.ChatCompletionResponse{
-		ID:      anthropicResp.ID,
-		Object:  "chat.completion",
-		Created: time.Now().Unix(),
-		Model:   anthropicResp.Model,
-		Choices: []models.Choice{{
-			Index:   0,
-			Message: models.AssistantMessage{Role: "assistant", Content: []models.ContentPart{{Type: "text", Text: text}}},
-			Finish:  "stop",
-		}},
-		Usage: models.Usage{
-			PromptTokens:     anthropicResp.Usage.InputTokens,
-			CompletionTokens: anthropicResp.Usage.OutputTokens,
-			TotalTokens:      totalTokens,
-		},
-	}
-	return out, time.Since(start), totalTokens, nil
 }
 
 func (p *geminiProvider) Chat(ctx context.Context, req models.ChatCompletionRequest, stream bool, send StreamSender) (models.ChatCompletionResponse, time.Duration, int, error) {
@@ -586,14 +700,28 @@ func (p *geminiProvider) Chat(ctx context.Context, req models.ChatCompletionRequ
 	payload := map[string]interface{}{
 		"contents": toGeminiContents(req.Messages),
 	}
-	if req.MaxTokens > 0 || req.Temperature > 0 {
-		gen := map[string]interface{}{}
-		if req.MaxTokens > 0 {
-			gen["maxOutputTokens"] = req.MaxTokens
+
+	// Forward generation config
+	gen := map[string]interface{}{}
+	if req.MaxTokens > 0 {
+		gen["maxOutputTokens"] = req.MaxTokens
+	}
+	if req.MaxCompletionTokens > 0 {
+		gen["maxOutputTokens"] = req.MaxCompletionTokens
+	}
+	if req.Temperature != nil {
+		gen["temperature"] = *req.Temperature
+	}
+	if req.TopP != nil {
+		gen["topP"] = *req.TopP
+	}
+	if len(req.Stop) > 0 && string(req.Stop) != "null" {
+		var stopSeqs interface{}
+		if err := json.Unmarshal(req.Stop, &stopSeqs); err == nil {
+			gen["stopSequences"] = stopSeqs
 		}
-		if req.Temperature > 0 {
-			gen["temperature"] = req.Temperature
-		}
+	}
+	if len(gen) > 0 {
 		payload["generationConfig"] = gen
 	}
 
@@ -642,14 +770,12 @@ func (p *geminiProvider) Chat(ctx context.Context, req models.ChatCompletionRequ
 				b2, _ := io.ReadAll(res2.Body)
 				return models.ChatCompletionResponse{}, time.Since(start), 0, errors.New(string(b2))
 			}
-			// Use the retry response
 			res = res2
 		} else {
 			return models.ChatCompletionResponse{}, time.Since(start), 0, errors.New(body)
 		}
 	}
 
-	// Handle Gemini streaming (SSE format with alt=sse)
 	if stream && send != nil {
 		return handleGeminiStream(res, req.Model, send, start)
 	}
@@ -689,7 +815,7 @@ func (p *geminiProvider) Chat(ctx context.Context, req models.ChatCompletionRequ
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		Model:   req.Model,
-		Choices: []models.Choice{{Index: 0, Message: models.AssistantMessage{Role: "assistant", Content: []models.ContentPart{{Type: "text", Text: text}}}, Finish: "stop"}},
+		Choices: []models.Choice{{Index: 0, Message: models.AssistantMessage{Role: "assistant", Content: &text}, Finish: "stop"}},
 		Usage:   usage,
 	}
 	return out, time.Since(start), out.Usage.TotalTokens, nil
@@ -697,7 +823,6 @@ func (p *geminiProvider) Chat(ctx context.Context, req models.ChatCompletionRequ
 
 func handleGeminiStream(resp *http.Response, model string, send StreamSender, start time.Time) (models.ChatCompletionResponse, time.Duration, int, error) {
 	scanner := bufio.NewScanner(resp.Body)
-	// Increase buffer for potentially large chunks
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var fullText strings.Builder
 	var totalTokens int
@@ -721,7 +846,6 @@ func handleGeminiStream(resp *http.Response, model string, send StreamSender, st
 			for _, part := range cand.Content.Parts {
 				if part.Text != "" {
 					fullText.WriteString(part.Text)
-					// Convert to OpenAI-compatible chunk format
 					chunk := fmt.Sprintf(`{"choices":[{"delta":{"content":%s}}]}`, jsonString(part.Text))
 					if err := send(chunk); err != nil {
 						return models.ChatCompletionResponse{}, time.Since(start), totalTokens, err
@@ -744,6 +868,7 @@ func handleGeminiStream(resp *http.Response, model string, send StreamSender, st
 		}
 	}
 
+	text := fullText.String()
 	out := models.ChatCompletionResponse{
 		ID:      fmt.Sprintf("gemini_%d", time.Now().UnixNano()),
 		Object:  "chat.completion",
@@ -751,7 +876,7 @@ func handleGeminiStream(resp *http.Response, model string, send StreamSender, st
 		Model:   model,
 		Choices: []models.Choice{{
 			Index:   0,
-			Message: models.AssistantMessage{Role: "assistant", Content: []models.ContentPart{{Type: "text", Text: fullText.String()}}},
+			Message: models.AssistantMessage{Role: "assistant", Content: &text},
 			Finish:  "stop",
 		}},
 		Usage: models.Usage{TotalTokens: totalTokens},
