@@ -1,7 +1,8 @@
-﻿package api
+package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,6 +35,11 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	tenant := middleware.TenantFromContext(r.Context())
 	if tenant == nil {
 		http.Error(w, "missing tenant", http.StatusUnauthorized)
+		return
+	}
+	// Check if tenant is suspended
+	if tenant.Suspended {
+		http.Error(w, "account suspended", http.StatusForbidden)
 		return
 	}
 	allowed, err := s.Limiter.Allow(r.Context(), tenant.ID)
@@ -139,7 +145,9 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	})
 	if status == http.StatusOK && tokens > 0 && cost > 0 {
 		_ = s.Store.AddUsageCost(r.Context(), tenant.ID, providerName, req.Model, tokens, cost, time.Now().UTC())
-		_ = s.Store.UpdateTenantBalance(r.Context(), tenant.ID, tenant.BalanceUSD-cost)
+		newBalance := tenant.BalanceUSD - cost
+		_ = s.Store.UpdateTenantBalance(r.Context(), tenant.ID, newBalance)
+		_ = s.Store.RecordTransaction(r.Context(), tenant.ID, "charge", -cost, newBalance, fmt.Sprintf("%s / %s / %d tokens", providerName, req.Model, tokens))
 	}
 
 	s.Logger.Info("request completed",
@@ -618,10 +626,13 @@ func (s *Server) TenantProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]interface{}{
-		"tenant_id": tenant.ID,
-		"name":      tenant.Name,
-		"username":  user.Username,
-		"balance_usd": tenant.BalanceUSD,
+		"tenant_id":      tenant.ID,
+		"name":           tenant.Name,
+		"username":       user.Username,
+		"balance_usd":    tenant.BalanceUSD,
+		"suspended":      tenant.Suspended,
+		"total_topup_usd": tenant.TotalTopupUSD,
+		"total_spent_usd": tenant.TotalSpentUSD,
 	})
 }
 
@@ -652,6 +663,9 @@ func (s *Server) TenantTopup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to update balance", http.StatusInternalServerError)
 		return
 	}
+	// Update total_topup_usd and record transaction
+	_, _ = s.Store.DB.Exec(r.Context(), `UPDATE tenants SET total_topup_usd = total_topup_usd + $2 WHERE id=$1`, user.TenantID, payload.Amount)
+	_ = s.Store.RecordTransaction(r.Context(), user.TenantID, "topup", payload.Amount, newBalance, fmt.Sprintf("Self-service topup $%.2f", payload.Amount))
 	writeJSON(w, map[string]interface{}{"balance_usd": newBalance})
 }
 
@@ -800,16 +814,33 @@ func (s *Server) AdminAdjustBalance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		BalanceUSD float64 `json:"balance_usd"`
+		BalanceUSD  float64 `json:"balance_usd"`
+		Description string  `json:"description"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
+	tenant, err := s.Store.GetTenantByID(r.Context(), id)
+	if err != nil {
+		http.Error(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+	diff := payload.BalanceUSD - tenant.BalanceUSD
 	if err := s.Store.UpdateTenantBalance(r.Context(), id, payload.BalanceUSD); err != nil {
 		http.Error(w, "failed to update balance", http.StatusInternalServerError)
 		return
 	}
+	desc := payload.Description
+	if desc == "" {
+		desc = fmt.Sprintf("Admin adjustment: $%.2f -> $%.2f", tenant.BalanceUSD, payload.BalanceUSD)
+	}
+	txType := "adjustment"
+	if diff > 0 {
+		// Positive adjustment counts as topup
+		_, _ = s.Store.DB.Exec(r.Context(), `UPDATE tenants SET total_topup_usd = total_topup_usd + $2 WHERE id=$1`, id, diff)
+	}
+	_ = s.Store.RecordTransaction(r.Context(), id, txType, diff, payload.BalanceUSD, desc)
 	writeJSON(w, map[string]interface{}{"status": "ok", "balance_usd": payload.BalanceUSD})
 }
 
@@ -845,6 +876,71 @@ func (s *Server) AdminProviderHealth(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, result)
+}
+
+// ---- Tenant Suspend/Unsuspend ----
+
+func (s *Server) AdminSuspendTenant(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		http.Error(w, "missing tenant id", http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.SuspendTenant(r.Context(), id, true); err != nil {
+		http.Error(w, "failed to suspend tenant", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) AdminUnsuspendTenant(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		http.Error(w, "missing tenant id", http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.SuspendTenant(r.Context(), id, false); err != nil {
+		http.Error(w, "failed to unsuspend tenant", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+// ---- Tenant Detail ----
+
+func (s *Server) AdminTenantDetail(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		http.Error(w, "missing tenant id", http.StatusBadRequest)
+		return
+	}
+	tenant, err := s.Store.GetTenantByID(r.Context(), id)
+	if err != nil {
+		http.Error(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, tenant)
+}
+
+// ---- Tenant Transactions ----
+
+func (s *Server) AdminTenantTransactions(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		http.Error(w, "missing tenant id", http.StatusBadRequest)
+		return
+	}
+	limitStr := r.URL.Query().Get("limit")
+	limit, _ := strconv.Atoi(limitStr)
+	if limit <= 0 {
+		limit = 100
+	}
+	txs, err := s.Store.ListTransactions(r.Context(), id, limit)
+	if err != nil {
+		http.Error(w, "failed to list transactions", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, txs)
 }
 
 func (s *Server) Health(w http.ResponseWriter, r *http.Request) {

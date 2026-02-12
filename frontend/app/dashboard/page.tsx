@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import Nav from '@/components/Nav';
 import StatusBadge from '@/components/StatusBadge';
 import { apiGet } from '@/lib/api';
@@ -17,6 +18,10 @@ interface DashboardStats {
   cost_24h: number;
   tokens_24h: number;
   hourly_series: { hour: string; requests: number; errors: number }[];
+  total_requests_all_time: number;
+  total_tokens_all_time: number;
+  total_cost_all_time: number;
+  total_revenue_all_time: number;
 }
 
 interface ProviderHealth {
@@ -34,6 +39,16 @@ interface ModelUsage {
   requests: number;
   tokens: number;
   cost_usd: number;
+}
+
+interface TenantRow {
+  id: string;
+  name: string;
+  balance_usd: number;
+  suspended: boolean;
+  total_topup_usd: number;
+  total_spent_usd: number;
+  last_active: string | null;
 }
 
 function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
@@ -54,6 +69,7 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [health, setHealth] = useState<ProviderHealth[]>([]);
   const [modelUsage, setModelUsage] = useState<ModelUsage[]>([]);
+  const [tenants, setTenants] = useState<TenantRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -64,12 +80,14 @@ export default function DashboardPage() {
     Promise.all([
       apiGet('/admin/stats', token),
       apiGet('/admin/provider-health', token),
-      apiGet('/admin/model-usage', token)
+      apiGet('/admin/model-usage', token),
+      apiGet('/admin/tenants', token)
     ])
-      .then(([s, h, m]) => {
+      .then(([s, h, m, t]) => {
         setStats(s);
         setHealth(Array.isArray(h) ? h : []);
         setModelUsage(Array.isArray(m) ? m : []);
+        setTenants(Array.isArray(t) ? t : []);
       })
       .catch((e) => setError(e.message || 'Failed to load'))
       .finally(() => setLoading(false));
@@ -103,22 +121,31 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* KPI Cards */}
+        {/* KPI Cards — All-time */}
         {loading ? (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-20" />)}
           </div>
         ) : stats && (
           <>
-            <section className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <StatCard label="Tenants" value={stats.total_tenants} sub={`${stats.active_tenants} active`} />
-              <StatCard label="Requests (24h)" value={stats.requests_24h.toLocaleString()} />
-              <StatCard label="Errors (24h)" value={stats.errors_24h} sub={`${stats.error_rate.toFixed(1)}% error rate`} />
-              <StatCard label="Tokens (24h)" value={stats.tokens_24h.toLocaleString()} />
-              <StatCard label="Avg Latency" value={`${Math.round(stats.avg_latency_ms)} ms`} />
-              <StatCard label="P95 Latency" value={`${Math.round(stats.p95_latency_ms)} ms`} />
-              <StatCard label="Cost (24h)" value={`$${stats.cost_24h.toFixed(4)}`} />
-              <StatCard label="Providers" value={health.length} sub={`${health.filter(h => h.enabled).length} enabled`} />
+            <section>
+              <h2 className="text-sm font-semibold text-black/50 uppercase tracking-wide mb-3">All-Time</h2>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <StatCard label="Total Requests" value={stats.total_requests_all_time.toLocaleString()} />
+                <StatCard label="Total Tokens" value={stats.total_tokens_all_time.toLocaleString()} />
+                <StatCard label="Total Cost" value={`$${stats.total_cost_all_time.toFixed(4)}`} />
+                <StatCard label="Total Revenue" value={`$${stats.total_revenue_all_time.toFixed(2)}`} sub="Sum of all topups" />
+              </div>
+            </section>
+
+            <section>
+              <h2 className="text-sm font-semibold text-black/50 uppercase tracking-wide mb-3">Last 24 Hours</h2>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <StatCard label="Tenants" value={stats.total_tenants} sub={`${stats.active_tenants} active`} />
+                <StatCard label="Requests" value={stats.requests_24h.toLocaleString()} sub={`${stats.errors_24h} errors (${stats.error_rate.toFixed(1)}%)`} />
+                <StatCard label="Tokens" value={stats.tokens_24h.toLocaleString()} />
+                <StatCard label="Cost" value={`$${stats.cost_24h.toFixed(4)}`} sub={`P95: ${Math.round(stats.p95_latency_ms)}ms`} />
+              </div>
             </section>
           </>
         )}
@@ -139,6 +166,57 @@ export default function DashboardPage() {
                   </div>
                 </div>
               ))}
+            </div>
+          </section>
+        )}
+
+        {/* Tenant Overview */}
+        {!loading && tenants.length > 0 && (
+          <section className="card p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Tenant Overview</h2>
+              <Link href="/tenants" className="text-sm text-black/50 hover:text-black underline">View All</Link>
+            </div>
+            <div className="border rounded-lg overflow-hidden text-sm">
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-black/[0.03] text-xs font-medium text-black/60 uppercase tracking-wide">
+                    <th className="px-4 py-2.5 text-left">Tenant</th>
+                    <th className="px-4 py-2.5 text-center">Status</th>
+                    <th className="px-4 py-2.5 text-right">Balance</th>
+                    <th className="px-4 py-2.5 text-right">Total Spent</th>
+                    <th className="px-4 py-2.5 text-right">Total Topup</th>
+                    <th className="px-4 py-2.5 text-left">Last Active</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tenants.slice(0, 10).map((t) => {
+                    const active = t.last_active && (Date.now() - new Date(t.last_active).getTime() < 24 * 60 * 60 * 1000);
+                    return (
+                      <tr key={t.id} className="border-t border-black/5 hover:bg-black/[0.02]">
+                        <td className="px-4 py-2.5">
+                          <Link href={`/tenants/${t.id}`} className="font-medium hover:underline">{t.name}</Link>
+                        </td>
+                        <td className="px-4 py-2.5 text-center">
+                          {t.suspended ? (
+                            <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-600">Suspended</span>
+                          ) : (
+                            <StatusBadge status={active ? 'active' : 'inactive'} label={active ? 'Active' : 'Inactive'} />
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 text-right font-mono">
+                          <span className={Number(t.balance_usd) <= 0 ? 'text-red-500' : ''}>${Number(t.balance_usd || 0).toFixed(2)}</span>
+                        </td>
+                        <td className="px-4 py-2.5 text-right font-mono text-black/60">${Number(t.total_spent_usd || 0).toFixed(4)}</td>
+                        <td className="px-4 py-2.5 text-right font-mono text-black/60">${Number(t.total_topup_usd || 0).toFixed(2)}</td>
+                        <td className="px-4 py-2.5 text-black/60 whitespace-nowrap text-xs">
+                          {t.last_active ? new Date(t.last_active).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Never'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           </section>
         )}

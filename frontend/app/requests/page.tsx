@@ -66,7 +66,7 @@ export default function RequestsPage() {
     if (debouncedModel) params.set('model', debouncedModel);
     if (statusFilter) params.set('status_code', statusFilter);
     apiGet(`/admin/requests?${params.toString()}`, token)
-      .then((r) => setResult(r))
+      .then((r) => setResult({ ...r, data: r.data || [] }))
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, [page, debouncedTenant, providerFilter, debouncedModel, statusFilter, sortBy, sortDir]);

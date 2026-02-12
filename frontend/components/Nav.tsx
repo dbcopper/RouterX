@@ -6,10 +6,10 @@ import { usePathname } from 'next/navigation';
 const links = [
   { href: '/dashboard', label: 'Dashboard' },
   { href: '/providers', label: 'Providers' },
-  { href: '/routing', label: 'Routing' },
   { href: '/pricing', label: 'Pricing' },
   { href: '/tenants', label: 'Tenants' },
-  { href: '/requests', label: 'Requests' }
+  { href: '/requests', label: 'Requests' },
+  { href: '/routing', label: 'Advanced Routing' }
 ];
 
 export default function Nav() {
@@ -25,7 +25,7 @@ export default function Nav() {
   return (
     <div className="flex items-center gap-2 text-sm">
       {links.map((l) => {
-        const active = pathname === l.href;
+        const active = pathname === l.href || (l.href !== '/dashboard' && pathname.startsWith(l.href + '/'));
         return (
           <Link
             key={l.href}

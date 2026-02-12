@@ -1,8 +1,10 @@
-﻿package router
+package router
 
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -73,53 +75,107 @@ func (r *Router) circuitFor(providerID string) *CircuitState {
 	return c
 }
 
+// Route implements OpenRouter-like auto-routing:
+// 1. Look up model in model_catalog -> provider_type
+// 2. Pick enabled providers of that type (try all for fallback)
+// 3. If model not in catalog, fall back to routing_rules (optional override)
+// 4. If nothing works, return clear error
 func (r *Router) Route(ctx context.Context, tenantID string, req models.ChatCompletionRequest, stream bool, send providers.StreamSender) (models.ChatCompletionResponse, string, bool, time.Duration, int, error) {
 	capability := "text"
 	if requestHasImage(req) {
 		capability = "vision"
 	}
-	rule, err := r.Store.GetRoutingRule(ctx, tenantID, capability)
-	if err != nil {
-		return models.ChatCompletionResponse{}, "", false, 0, 0, err
-	}
+
+	// Step 1: Check if tenant has a routing rule override for this capability
+	rule, ruleErr := r.Store.GetRoutingRule(ctx, tenantID, capability)
+
+	// Step 2: If model not specified, try to get default from rule or use "default"
 	if req.Model == "" {
-		req.Model = rule.Model
+		if rule != nil && rule.Model != "" {
+			req.Model = rule.Model
+		} else {
+			req.Model = "default"
+		}
 	}
-	primaryID := rule.PrimaryProviderID
-	secondaryID := rule.SecondaryProviderID
-	if inferredType, ok, _ := r.Store.GetModelProvider(ctx, req.Model); ok && inferredType != "" {
-		if prov, ok := r.pickProviderByType(ctx, inferredType, capability); ok {
-			primaryID = prov.ID
-			// Only allow fallback within the same provider type when a model is explicitly mapped.
-			if secondaryID != "" {
-				if sec, err := r.Store.GetProviderByID(ctx, secondaryID); err == nil {
-					if sec.Type != inferredType {
-						secondaryID = ""
+
+	var errs []string
+
+	// Step 3: Try auto-routing via model_catalog
+	providerType, catalogOK, catalogErr := r.Store.GetModelProvider(ctx, req.Model)
+	if catalogOK && providerType != "" {
+		resp, providerName, fallback, ttft, tokens, err := r.tryProvidersByType(ctx, providerType, capability, req, stream, send)
+		if err == nil {
+			return resp, providerName, fallback, ttft, tokens, nil
+		}
+		errs = append(errs, fmt.Sprintf("auto-route(%s): %v", providerType, err))
+	} else if catalogErr != nil {
+		errs = append(errs, fmt.Sprintf("catalog lookup: %v", catalogErr))
+	} else {
+		errs = append(errs, "model not in catalog")
+	}
+
+	// Step 4: Fall back to routing_rules if available
+	if ruleErr == nil && rule != nil {
+		primary, err := r.Store.GetProviderByID(ctx, rule.PrimaryProviderID)
+		if err == nil {
+			resp, providerName, _, ttft, tokens, err := r.tryProvider(ctx, primary, req, stream, send)
+			if err == nil {
+				return resp, providerName, false, ttft, tokens, nil
+			}
+			errs = append(errs, fmt.Sprintf("rule-primary(%s): %v", primary.Name, err))
+			// Try secondary
+			if rule.SecondaryProviderID != "" {
+				secondary, err2 := r.Store.GetProviderByID(ctx, rule.SecondaryProviderID)
+				if err2 == nil {
+					resp2, provider2, _, ttft2, tokens2, err2 := r.tryProvider(ctx, secondary, req, stream, send)
+					if err2 == nil {
+						return resp2, provider2, true, ttft2, tokens2, nil
 					}
+					errs = append(errs, fmt.Sprintf("rule-secondary(%s): %v", secondary.Name, err2))
 				}
 			}
 		}
 	}
-	primary, err := r.Store.GetProviderByID(ctx, primaryID)
-	if err != nil {
-		return models.ChatCompletionResponse{}, "", false, 0, 0, err
+
+	// Step 5: No routing succeeded — show full error chain
+	if len(errs) > 0 {
+		return models.ChatCompletionResponse{}, "", false, 0, 0, fmt.Errorf("routing failed for model %s: %s", req.Model, strings.Join(errs, "; "))
 	}
-	resp, provider, usedFallback, ttft, tokens, err := r.tryProvider(ctx, primary, req, stream, send)
-	if err == nil {
-		return resp, provider, usedFallback, ttft, tokens, nil
+	return models.ChatCompletionResponse{}, "", false, 0, 0, fmt.Errorf("no provider available for model %s (not in model_catalog, no routing rules for tenant %s)", req.Model, tenantID)
+}
+
+// tryProvidersByType tries all enabled providers of the given type, with fallback
+func (r *Router) tryProvidersByType(ctx context.Context, providerType, capability string, req models.ChatCompletionRequest, stream bool, send providers.StreamSender) (models.ChatCompletionResponse, string, bool, time.Duration, int, error) {
+	providersList, err := r.Store.GetEnabledProvidersByType(ctx, providerType)
+	if err != nil || len(providersList) == 0 {
+		return models.ChatCompletionResponse{}, "", false, 0, 0, errors.New("no enabled provider for type: " + providerType)
 	}
-	if secondaryID == "" {
-		return models.ChatCompletionResponse{}, primary.Name, false, ttft, tokens, err
+
+	// Filter by capability
+	var candidates []store.Provider
+	for _, p := range providersList {
+		if capability == "vision" && !p.SupportsVision {
+			continue
+		}
+		if capability == "text" && !p.SupportsText {
+			continue
+		}
+		candidates = append(candidates, p)
 	}
-	secondary, err2 := r.Store.GetProviderByID(ctx, secondaryID)
-	if err2 != nil {
-		return models.ChatCompletionResponse{}, primary.Name, false, ttft, tokens, err
+	if len(candidates) == 0 {
+		return models.ChatCompletionResponse{}, "", false, 0, 0, errors.New("no provider supports " + capability + " for type: " + providerType)
 	}
-	resp2, provider2, _, ttft2, tokens2, err2 := r.tryProvider(ctx, secondary, req, stream, send)
-	if err2 != nil {
-		return models.ChatCompletionResponse{}, provider2, true, ttft2, tokens2, err2
+
+	var lastErr error
+	for i, p := range candidates {
+		pCopy := p
+		resp, providerName, _, ttft, tokens, err := r.tryProvider(ctx, &pCopy, req, stream, send)
+		if err == nil {
+			return resp, providerName, i > 0, ttft, tokens, nil
+		}
+		lastErr = err
 	}
-	return resp2, provider2, true, ttft2, tokens2, nil
+	return models.ChatCompletionResponse{}, "", false, 0, 0, lastErr
 }
 
 func (r *Router) tryProvider(ctx context.Context, p *store.Provider, req models.ChatCompletionRequest, stream bool, send providers.StreamSender) (models.ChatCompletionResponse, string, bool, time.Duration, int, error) {
@@ -168,24 +224,4 @@ func (r *Router) GetCircuitStates() map[string]bool {
 		states[id] = !c.Allow()
 	}
 	return states
-}
-
-func (r *Router) pickProviderByType(ctx context.Context, providerType, capability string) (*store.Provider, bool) {
-	providersList, err := r.Store.GetProviders(ctx)
-	if err != nil {
-		return nil, false
-	}
-	for _, p := range providersList {
-		if !p.Enabled || p.Type != providerType {
-			continue
-		}
-		if capability == "vision" && !p.SupportsVision {
-			continue
-		}
-		if capability == "text" && !p.SupportsText {
-			continue
-		}
-		return &p, true
-	}
-	return nil, false
 }

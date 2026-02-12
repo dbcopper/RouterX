@@ -1,4 +1,4 @@
-﻿package store
+package store
 
 import (
 	"context"
@@ -37,11 +37,14 @@ type RoutingRule struct {
 }
 
 type Tenant struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	BalanceUSD float64    `json:"balance_usd"`
-	CreatedAt  time.Time  `json:"created_at"`
-	LastActive *time.Time `json:"last_active"`
+	ID            string     `json:"id"`
+	Name          string     `json:"name"`
+	BalanceUSD    float64    `json:"balance_usd"`
+	CreatedAt     time.Time  `json:"created_at"`
+	LastActive    *time.Time `json:"last_active"`
+	Suspended     bool       `json:"suspended"`
+	TotalTopupUSD float64    `json:"total_topup_usd"`
+	TotalSpentUSD float64    `json:"total_spent_usd"`
 }
 
 type APIKey struct {
@@ -105,14 +108,24 @@ type ModelUsageSummary struct {
 	Requests int     `json:"requests"`
 }
 
+type BalanceTransaction struct {
+	ID           int       `json:"id"`
+	TenantID     string    `json:"tenant_id"`
+	Type         string    `json:"type"`
+	AmountUSD    float64   `json:"amount_usd"`
+	BalanceAfter float64   `json:"balance_after"`
+	Description  string    `json:"description"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
 func New(db *pgxpool.Pool) *Store {
 	return &Store{DB: db}
 }
 
 func (s *Store) GetTenantByAPIKey(ctx context.Context, key string) (*Tenant, error) {
-	row := s.DB.QueryRow(ctx, `SELECT t.id, t.name, t.balance_usd, t.created_at, t.last_active FROM api_keys k JOIN tenants t ON k.tenant_id=t.id WHERE k.key=$1`, key)
+	row := s.DB.QueryRow(ctx, `SELECT t.id, t.name, t.balance_usd, t.created_at, t.last_active, t.suspended, t.total_topup_usd, t.total_spent_usd FROM api_keys k JOIN tenants t ON k.tenant_id=t.id WHERE k.key=$1`, key)
 	var t Tenant
-	if err := row.Scan(&t.ID, &t.Name, &t.BalanceUSD, &t.CreatedAt, &t.LastActive); err != nil {
+	if err := row.Scan(&t.ID, &t.Name, &t.BalanceUSD, &t.CreatedAt, &t.LastActive, &t.Suspended, &t.TotalTopupUSD, &t.TotalSpentUSD); err != nil {
 		return nil, err
 	}
 	return &t, nil
@@ -155,10 +168,28 @@ func (s *Store) GetProviderByID(ctx context.Context, id string) (*Provider, erro
 	return &p, nil
 }
 
+func (s *Store) GetEnabledProvidersByType(ctx context.Context, providerType string) ([]Provider, error) {
+	rows, err := s.DB.Query(ctx, `SELECT id, name, type, COALESCE(base_url,''), COALESCE(api_key,''), default_model, supports_text, supports_vision, enabled FROM providers WHERE type=$1 AND enabled=true`, providerType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var providers []Provider
+	for rows.Next() {
+		var p Provider
+		if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &p.APIKey, &p.DefaultModel, &p.SupportsText, &p.SupportsVision, &p.Enabled); err != nil {
+			return nil, err
+		}
+		p.HasAPIKey = p.APIKey != ""
+		providers = append(providers, p)
+	}
+	return providers, rows.Err()
+}
+
 func (s *Store) GetTenantByID(ctx context.Context, id string) (*Tenant, error) {
-	row := s.DB.QueryRow(ctx, `SELECT id, name, balance_usd, created_at, last_active FROM tenants WHERE id=$1`, id)
+	row := s.DB.QueryRow(ctx, `SELECT id, name, balance_usd, created_at, last_active, suspended, total_topup_usd, total_spent_usd FROM tenants WHERE id=$1`, id)
 	var t Tenant
-	if err := row.Scan(&t.ID, &t.Name, &t.BalanceUSD, &t.CreatedAt, &t.LastActive); err != nil {
+	if err := row.Scan(&t.ID, &t.Name, &t.BalanceUSD, &t.CreatedAt, &t.LastActive, &t.Suspended, &t.TotalTopupUSD, &t.TotalSpentUSD); err != nil {
 		return nil, err
 	}
 	return &t, nil
@@ -219,7 +250,7 @@ func (s *Store) ListRoutingRules(ctx context.Context) ([]RoutingRule, error) {
 }
 
 func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
-	rows, err := s.DB.Query(ctx, `SELECT id, name, balance_usd, created_at, last_active FROM tenants ORDER BY created_at DESC`)
+	rows, err := s.DB.Query(ctx, `SELECT id, name, balance_usd, created_at, last_active, suspended, total_topup_usd, total_spent_usd FROM tenants ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +258,7 @@ func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
 	var tenants []Tenant
 	for rows.Next() {
 		var t Tenant
-		if err := rows.Scan(&t.ID, &t.Name, &t.BalanceUSD, &t.CreatedAt, &t.LastActive); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.BalanceUSD, &t.CreatedAt, &t.LastActive, &t.Suspended, &t.TotalTopupUSD, &t.TotalSpentUSD); err != nil {
 			return nil, err
 		}
 		tenants = append(tenants, t)
@@ -336,6 +367,10 @@ func (s *Store) RecordUsageDaily(ctx context.Context, tenantID, provider, model 
 func (s *Store) AddUsageCost(ctx context.Context, tenantID, provider, model string, tokens int, cost float64, day time.Time) error {
 	_, err := s.DB.Exec(ctx, `INSERT INTO usage_daily (tenant_id, provider, model, day, tokens, cost_usd) VALUES ($1,$2,$3,$4,$5,$6)
 	ON CONFLICT (tenant_id, provider, model, day) DO UPDATE SET tokens = usage_daily.tokens + EXCLUDED.tokens, cost_usd = usage_daily.cost_usd + EXCLUDED.cost_usd`, tenantID, provider, model, day, tokens, cost)
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.Exec(ctx, `UPDATE tenants SET total_spent_usd = total_spent_usd + $2 WHERE id=$1`, tenantID, cost)
 	return err
 }
 
@@ -523,6 +558,11 @@ type AdminDashboardStats struct {
 	Cost24h       float64        `json:"cost_24h"`
 	Tokens24h     int            `json:"tokens_24h"`
 	HourlySeries  []HourlyBucket `json:"hourly_series"`
+	// All-time stats
+	TotalRequestsAllTime int     `json:"total_requests_all_time"`
+	TotalTokensAllTime   int     `json:"total_tokens_all_time"`
+	TotalCostAllTime     float64 `json:"total_cost_all_time"`
+	TotalRevenueAllTime  float64 `json:"total_revenue_all_time"`
 }
 
 func (s *Store) GetAdminDashboardStats(ctx context.Context) (*AdminDashboardStats, error) {
@@ -550,6 +590,19 @@ func (s *Store) GetAdminDashboardStats(ctx context.Context) (*AdminDashboardStat
 	if stats.Requests24h > 0 {
 		stats.ErrorRate = float64(stats.Errors24h) / float64(stats.Requests24h) * 100
 	}
+
+	// All-time request stats
+	row = s.DB.QueryRow(ctx, `
+		SELECT COUNT(*),
+		       COALESCE(SUM(tokens), 0),
+		       COALESCE(SUM(cost_usd), 0)
+		FROM request_logs
+	`)
+	_ = row.Scan(&stats.TotalRequestsAllTime, &stats.TotalTokensAllTime, &stats.TotalCostAllTime)
+
+	// All-time revenue (sum of all topups)
+	row = s.DB.QueryRow(ctx, `SELECT COALESCE(SUM(total_topup_usd), 0) FROM tenants`)
+	_ = row.Scan(&stats.TotalRevenueAllTime)
 
 	// hourly series
 	rows, err := s.DB.Query(ctx, `
@@ -735,4 +788,37 @@ func (s *Store) ListModelUsage(ctx context.Context) ([]ModelUsageSummary, error)
 		list = append(list, m)
 	}
 	return list, rows.Err()
+}
+
+// ---- Balance Transactions ----
+
+func (s *Store) RecordTransaction(ctx context.Context, tenantID, txType string, amount, balanceAfter float64, description string) error {
+	_, err := s.DB.Exec(ctx, `INSERT INTO balance_transactions (tenant_id, type, amount_usd, balance_after, description) VALUES ($1,$2,$3,$4,$5)`,
+		tenantID, txType, amount, balanceAfter, description)
+	return err
+}
+
+func (s *Store) ListTransactions(ctx context.Context, tenantID string, limit int) ([]BalanceTransaction, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.DB.Query(ctx, `SELECT id, tenant_id, type, amount_usd, balance_after, COALESCE(description,''), created_at FROM balance_transactions WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT $2`, tenantID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var txs []BalanceTransaction
+	for rows.Next() {
+		var tx BalanceTransaction
+		if err := rows.Scan(&tx.ID, &tx.TenantID, &tx.Type, &tx.AmountUSD, &tx.BalanceAfter, &tx.Description, &tx.CreatedAt); err != nil {
+			return nil, err
+		}
+		txs = append(txs, tx)
+	}
+	return txs, rows.Err()
+}
+
+func (s *Store) SuspendTenant(ctx context.Context, tenantID string, suspended bool) error {
+	_, err := s.DB.Exec(ctx, `UPDATE tenants SET suspended=$2 WHERE id=$1`, tenantID, suspended)
+	return err
 }

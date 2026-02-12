@@ -1,7 +1,7 @@
 import requests
 
 url = "http://localhost:8080/v1/chat/completions"
-api_key = "user_key_39VSSxepGKcvWy68YF76eXerwBS"
+api_key = "user_key_39YNWAUo4k6xQIBAG9zNpM0FMdb"
 
 payload = {
     "model": "gemini-2.5-flash",
@@ -15,6 +15,11 @@ headers = {
     "Content-Type": "application/json"
 }
 
+resp = requests.post(url, json=payload, headers=headers)
+print(resp.status_code)
+print(resp.text)
+
+payload["model"] = "gpt-3.5-turbo"
 resp = requests.post(url, json=payload, headers=headers)
 print(resp.status_code)
 print(resp.text)

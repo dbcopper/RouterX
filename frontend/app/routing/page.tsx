@@ -132,8 +132,8 @@ export default function RoutingPage() {
       <div className="max-w-7xl mx-auto space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-semibold">Routing Rules</h1>
-            <p className="text-sm text-black/50">Configure provider routing and fallback per tenant</p>
+            <h1 className="text-3xl font-semibold">Advanced Routing</h1>
+            <p className="text-sm text-black/50">Optional routing overrides per tenant</p>
           </div>
           <Nav />
         </div>
@@ -144,6 +144,14 @@ export default function RoutingPage() {
             <button onClick={() => setError('')} className="text-red-400">✕</button>
           </div>
         )}
+
+        {/* Info Banner */}
+        <div className="card p-4 bg-blue-50 border-blue-200">
+          <p className="text-sm text-blue-800">
+            <strong>Note:</strong> Routing rules are optional overrides. By default, RouterX auto-routes requests based on the model name via the model catalog.
+            Use rules here only to force a specific provider for a particular tenant.
+          </p>
+        </div>
 
         {/* Tenant Selector */}
         <div className="card p-4">
