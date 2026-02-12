@@ -88,16 +88,38 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var resp models.ChatCompletionResponse
 	var routeErr error
 
-	// Parse provider sort preference from header
-	sortMode := router.SortDefault
+	// Build route options from headers
+	opts := router.DefaultRouteOptions()
 	if sortHeader := r.Header.Get("X-RouterX-Sort"); sortHeader != "" {
 		switch strings.ToLower(sortHeader) {
 		case "price":
-			sortMode = router.SortPrice
+			opts.Sort = router.SortPrice
 		case "latency":
-			sortMode = router.SortLatency
+			opts.Sort = router.SortLatency
 		}
 	}
+	// BYOK: user-provided API key
+	if byokKey := r.Header.Get("X-RouterX-API-Key"); byokKey != "" {
+		opts.BYOKKey = byokKey
+	}
+	// Provider preferences
+	if only := r.Header.Get("X-RouterX-Provider-Only"); only != "" {
+		opts.ProviderOnly = strings.Split(only, ",")
+	}
+	if ignore := r.Header.Get("X-RouterX-Provider-Ignore"); ignore != "" {
+		opts.ProviderIgnore = strings.Split(ignore, ",")
+	}
+	if order := r.Header.Get("X-RouterX-Provider-Order"); order != "" {
+		opts.ProviderOrder = strings.Split(order, ",")
+	}
+	// Fallback control
+	if fb := r.Header.Get("X-RouterX-Allow-Fallbacks"); fb == "false" {
+		opts.AllowFallbacks = false
+	}
+	// User tracking
+	opts.UserID = r.Header.Get("X-RouterX-User")
+	opts.AppTitle = r.Header.Get("X-Title")
+	opts.AppReferer = r.Header.Get("HTTP-Referer")
 
 	if stream {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -118,9 +140,9 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 			return err
 		}
-		resp, providerName, fallbackUsed, ttft, tokens, routeErr = s.Router.RouteWithSort(r.Context(), tenant.ID, req, true, send, sortMode)
+		resp, providerName, fallbackUsed, ttft, tokens, routeErr = s.Router.RouteWith(r.Context(), tenant.ID, req, true, send, opts)
 	} else {
-		resp, providerName, fallbackUsed, ttft, tokens, routeErr = s.Router.RouteWithSort(r.Context(), tenant.ID, req, false, nil, sortMode)
+		resp, providerName, fallbackUsed, ttft, tokens, routeErr = s.Router.RouteWith(r.Context(), tenant.ID, req, false, nil, opts)
 	}
 
 	latency := time.Since(start)

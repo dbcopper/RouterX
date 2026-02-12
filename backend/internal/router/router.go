@@ -125,16 +125,35 @@ const (
 	SortLatency SortMode = "latency" // lowest latency first
 )
 
-// Route implements OpenRouter-like auto-routing:
-// 1. Look up model in model_catalog -> provider_type
-// 2. Pick enabled providers of that type (try all for fallback)
-// 3. If model not in catalog, fall back to routing_rules (optional override)
-// 4. If nothing works, return clear error
+// RouteOptions configures routing behavior per request.
+type RouteOptions struct {
+	Sort           SortMode // provider sort mode
+	BYOKKey        string   // user-provided API key (overrides system key)
+	ProviderOnly   []string // only use these providers (by name or ID)
+	ProviderIgnore []string // exclude these providers
+	ProviderOrder  []string // try providers in this order
+	AllowFallbacks bool     // allow fallback to secondary providers (default true)
+	UserID         string   // end-user ID for tracking
+	AppTitle       string   // app name for attribution
+	AppReferer     string   // app referer URL
+}
+
+func DefaultRouteOptions() RouteOptions {
+	return RouteOptions{AllowFallbacks: true}
+}
+
+// Route implements OpenRouter-like auto-routing with default options.
 func (r *Router) Route(ctx context.Context, tenantID string, req models.ChatCompletionRequest, stream bool, send providers.StreamSender) (models.ChatCompletionResponse, string, bool, time.Duration, int, error) {
-	return r.RouteWithSort(ctx, tenantID, req, stream, send, SortDefault)
+	return r.RouteWith(ctx, tenantID, req, stream, send, DefaultRouteOptions())
 }
 
 func (r *Router) RouteWithSort(ctx context.Context, tenantID string, req models.ChatCompletionRequest, stream bool, send providers.StreamSender, sortMode SortMode) (models.ChatCompletionResponse, string, bool, time.Duration, int, error) {
+	opts := DefaultRouteOptions()
+	opts.Sort = sortMode
+	return r.RouteWith(ctx, tenantID, req, stream, send, opts)
+}
+
+func (r *Router) RouteWith(ctx context.Context, tenantID string, req models.ChatCompletionRequest, stream bool, send providers.StreamSender, opts RouteOptions) (models.ChatCompletionResponse, string, bool, time.Duration, int, error) {
 	capability := "text"
 	if requestHasImage(req) {
 		capability = "vision"
@@ -157,7 +176,7 @@ func (r *Router) RouteWithSort(ctx context.Context, tenantID string, req models.
 	// Step 3: Try auto-routing via model_catalog
 	providerType, catalogOK, catalogErr := r.Store.GetModelProvider(ctx, req.Model)
 	if catalogOK && providerType != "" {
-		resp, providerName, fallback, ttft, tokens, err := r.tryProvidersByType(ctx, providerType, capability, req, stream, send, sortMode)
+		resp, providerName, fallback, ttft, tokens, err := r.tryProvidersByType(ctx, providerType, capability, req, stream, send, opts)
 		if err == nil {
 			return resp, providerName, fallback, ttft, tokens, nil
 		}
@@ -199,9 +218,7 @@ func (r *Router) RouteWithSort(ctx context.Context, tenantID string, req models.
 }
 
 // tryProvidersByType tries all enabled providers of the given type, with fallback.
-// Providers are sorted based on sortMode: price (cheapest first), latency (fastest first),
-// or default (healthy first, then by latency).
-func (r *Router) tryProvidersByType(ctx context.Context, providerType, capability string, req models.ChatCompletionRequest, stream bool, send providers.StreamSender, sortMode SortMode) (models.ChatCompletionResponse, string, bool, time.Duration, int, error) {
+func (r *Router) tryProvidersByType(ctx context.Context, providerType, capability string, req models.ChatCompletionRequest, stream bool, send providers.StreamSender, opts RouteOptions) (models.ChatCompletionResponse, string, bool, time.Duration, int, error) {
 	providersList, err := r.Store.GetEnabledProvidersByType(ctx, providerType)
 	if err != nil || len(providersList) == 0 {
 		return models.ChatCompletionResponse{}, "", false, 0, 0, errors.New("no enabled provider for type: " + providerType)
@@ -216,41 +233,82 @@ func (r *Router) tryProvidersByType(ctx context.Context, providerType, capabilit
 		if capability == "text" && !p.SupportsText {
 			continue
 		}
+		// Apply provider.only filter
+		if len(opts.ProviderOnly) > 0 && !containsStr(opts.ProviderOnly, p.ID) && !containsStr(opts.ProviderOnly, p.Name) {
+			continue
+		}
+		// Apply provider.ignore filter
+		if len(opts.ProviderIgnore) > 0 && (containsStr(opts.ProviderIgnore, p.ID) || containsStr(opts.ProviderIgnore, p.Name)) {
+			continue
+		}
 		candidates = append(candidates, p)
 	}
 	if len(candidates) == 0 {
 		return models.ChatCompletionResponse{}, "", false, 0, 0, errors.New("no provider supports " + capability + " for type: " + providerType)
 	}
 
-	// Sort candidates based on mode
-	switch sortMode {
-	case SortLatency:
-		sort.Slice(candidates, func(i, j int) bool {
-			li := r.Latency.Average(candidates[i].ID)
-			lj := r.Latency.Average(candidates[j].ID)
-			if li == 0 {
-				return false
+	// Apply provider.order if specified
+	if len(opts.ProviderOrder) > 0 {
+		ordered := make([]store.Provider, 0, len(candidates))
+		for _, name := range opts.ProviderOrder {
+			for _, p := range candidates {
+				if p.ID == name || p.Name == name {
+					ordered = append(ordered, p)
+					break
+				}
 			}
-			if lj == 0 {
-				return true
+		}
+		// Append any remaining candidates not in the order list
+		for _, p := range candidates {
+			found := false
+			for _, o := range ordered {
+				if o.ID == p.ID {
+					found = true
+					break
+				}
 			}
-			return li < lj
-		})
-	default:
-		// Default: prioritize healthy (non-circuit-open) providers, then by latency
-		sort.Slice(candidates, func(i, j int) bool {
-			ci := r.circuitFor(candidates[i].ID).Allow()
-			cj := r.circuitFor(candidates[j].ID).Allow()
-			if ci != cj {
-				return ci // healthy before unhealthy
+			if !found {
+				ordered = append(ordered, p)
 			}
-			li := r.Latency.Average(candidates[i].ID)
-			lj := r.Latency.Average(candidates[j].ID)
-			if li == 0 || lj == 0 {
-				return false
-			}
-			return li < lj
-		})
+		}
+		candidates = ordered
+	} else {
+		// Sort candidates based on mode
+		switch opts.Sort {
+		case SortLatency:
+			sort.Slice(candidates, func(i, j int) bool {
+				li := r.Latency.Average(candidates[i].ID)
+				lj := r.Latency.Average(candidates[j].ID)
+				if li == 0 {
+					return false
+				}
+				if lj == 0 {
+					return true
+				}
+				return li < lj
+			})
+		default:
+			sort.Slice(candidates, func(i, j int) bool {
+				ci := r.circuitFor(candidates[i].ID).Allow()
+				cj := r.circuitFor(candidates[j].ID).Allow()
+				if ci != cj {
+					return ci
+				}
+				li := r.Latency.Average(candidates[i].ID)
+				lj := r.Latency.Average(candidates[j].ID)
+				if li == 0 || lj == 0 {
+					return false
+				}
+				return li < lj
+			})
+		}
+	}
+
+	// BYOK: override API key if provided
+	if opts.BYOKKey != "" {
+		for i := range candidates {
+			candidates[i].APIKey = opts.BYOKKey
+		}
 	}
 
 	var lastErr error
@@ -261,8 +319,21 @@ func (r *Router) tryProvidersByType(ctx context.Context, providerType, capabilit
 			return resp, providerName, i > 0, ttft, tokens, nil
 		}
 		lastErr = err
+		// If fallbacks disabled, stop after first attempt
+		if !opts.AllowFallbacks {
+			break
+		}
 	}
 	return models.ChatCompletionResponse{}, "", false, 0, 0, lastErr
+}
+
+func containsStr(list []string, s string) bool {
+	for _, v := range list {
+		if strings.EqualFold(v, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Router) tryProvider(ctx context.Context, p *store.Provider, req models.ChatCompletionRequest, stream bool, send providers.StreamSender) (models.ChatCompletionResponse, string, bool, time.Duration, int, error) {
