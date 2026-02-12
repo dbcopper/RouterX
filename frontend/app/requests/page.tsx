@@ -148,8 +148,23 @@ export default function RequestsPage() {
               <option value="502">502 Bad Gateway</option>
             </select>
             <button
-              onClick={fetchData}
+              onClick={() => {
+                const token = localStorage.getItem('routerx_token') || '';
+                const params = new URLSearchParams();
+                if (debouncedTenant) params.set('tenant_id', debouncedTenant);
+                if (providerFilter) params.set('provider', providerFilter);
+                if (debouncedModel) params.set('model', debouncedModel);
+                if (statusFilter) params.set('status_code', statusFilter);
+                const base = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8080';
+                window.open(`${base}/admin/requests/export?${params.toString()}&token=${token}`, '_blank');
+              }}
               className="px-3 py-1.5 text-sm rounded-lg border border-black/10 hover:bg-black/5 ml-auto"
+            >
+              Export CSV
+            </button>
+            <button
+              onClick={fetchData}
+              className="px-3 py-1.5 text-sm rounded-lg border border-black/10 hover:bg-black/5"
             >
               Refresh
             </button>

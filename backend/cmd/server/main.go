@@ -101,6 +101,7 @@ func main() {
 			r.Post("/tenants/{id}/unsuspend", srv.AdminUnsuspendTenant)
 			r.Get("/tenants/{id}/transactions", srv.AdminTenantTransactions)
 			r.Get("/requests", srv.AdminRequestsPaginated)
+			r.Get("/requests/export", srv.AdminExportRequestsCSV)
 			r.Delete("/requests/{id}", srv.AdminDeleteRequest)
 			r.Get("/model-usage", srv.AdminModelUsage)
 			r.Get("/models", srv.AdminListModels)

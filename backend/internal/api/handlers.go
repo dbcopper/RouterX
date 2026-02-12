@@ -1047,6 +1047,36 @@ func (s *Server) Embeddings(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "no provider with API key for embeddings", http.StatusBadGateway)
 }
 
+// AdminExportRequestsCSV exports request logs as CSV.
+func (s *Server) AdminExportRequestsCSV(w http.ResponseWriter, r *http.Request) {
+	statusCode, _ := strconv.Atoi(r.URL.Query().Get("status_code"))
+	filters := store.RequestLogFilters{
+		TenantID:   r.URL.Query().Get("tenant_id"),
+		Provider:   r.URL.Query().Get("provider"),
+		Model:      r.URL.Query().Get("model"),
+		StatusCode: statusCode,
+		SortBy:     "created_at",
+		SortDir:    "desc",
+	}
+	result, err := s.Store.ListRequestLogsPaginated(r.Context(), 1, 10000, filters)
+	if err != nil {
+		http.Error(w, "failed to export", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", "attachment; filename=request_logs.csv")
+	w.Write([]byte("id,tenant_id,provider,model,latency_ms,ttft_ms,tokens,cost_usd,fallback_used,status_code,error_code,created_at\n"))
+	for _, row := range result.Data {
+		line := fmt.Sprintf("%d,%s,%s,%s,%d,%d,%d,%.6f,%t,%d,%s,%s\n",
+			row.ID, row.TenantID, row.Provider, row.Model,
+			row.LatencyMS, row.TTFTMS, row.Tokens, row.CostUSD,
+			row.FallbackUsed, row.StatusCode, row.ErrorCode,
+			row.CreatedAt.Format(time.RFC3339))
+		w.Write([]byte(line))
+	}
+}
+
 // ListModels returns OpenAI-compatible /v1/models response.
 func (s *Server) ListModels(w http.ResponseWriter, r *http.Request) {
 	items, err := s.Store.ListAllModels(r.Context())
