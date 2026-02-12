@@ -69,6 +69,12 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if req.Model == "" {
 		req.Model = "default"
 	}
+	// Handle model suffixes (:free skips billing)
+	freeMode := false
+	if strings.HasSuffix(req.Model, ":free") {
+		freeMode = true
+		req.Model = strings.TrimSuffix(req.Model, ":free")
+	}
 	apiKeyValue := extractAPIKey(r)
 	if apiKeyValue != "" {
 		if keyRec, err := s.Store.GetAPIKey(r.Context(), apiKeyValue); err == nil {
@@ -83,6 +89,19 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	promptHash := util.HashString(util.NormalizeSpaces(extractText(req)))
+
+	// Prompt caching: check Redis if cache header set
+	cacheEnabled := r.Header.Get("X-RouterX-Cache") == "true"
+	cacheKey := "prompt_cache:" + req.Model + ":" + promptHash
+	if cacheEnabled && !req.Stream && s.Router.Redis != nil {
+		if cached, err := s.Router.Redis.Get(r.Context(), cacheKey).Result(); err == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-RouterX-Cache-Hit", "true")
+			w.Write([]byte(cached))
+			return
+		}
+	}
+
 	start := time.Now()
 
 	stream := req.Stream
@@ -208,6 +227,9 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		setRoutingHeaders(providerName, latency.Milliseconds(), cost, fallbackUsed)
 	}
 
+	if freeMode {
+		cost = 0
+	}
 	if status == http.StatusOK && tokens > 0 && cost > 0 {
 		_ = s.Store.AddUsageCost(r.Context(), tenant.ID, providerName, req.Model, tokens, cost, time.Now().UTC())
 		newBalance := tenant.BalanceUSD - cost
@@ -226,6 +248,12 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if !stream && routeErr == nil {
+		// Cache response if caching enabled
+		if cacheEnabled && s.Router.Redis != nil {
+			if respBytes, err := json.Marshal(resp); err == nil {
+				_ = s.Router.Redis.Set(r.Context(), cacheKey, string(respBytes), 5*time.Minute).Err()
+			}
+		}
 		writeJSON(w, resp)
 	}
 }
