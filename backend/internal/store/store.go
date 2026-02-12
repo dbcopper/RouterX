@@ -778,12 +778,13 @@ func (s *Store) DeleteRoutingRule(ctx context.Context, id string) error {
 // ---- Provider Health ----
 
 type ProviderHealthStatus struct {
-	ProviderID   string `json:"provider_id"`
-	ProviderName string `json:"provider_name"`
-	Type         string `json:"type"`
-	Enabled      bool   `json:"enabled"`
-	HealthStatus string `json:"health_status"`
-	CircuitOpen  bool   `json:"circuit_open"`
+	ProviderID    string `json:"provider_id"`
+	ProviderName  string `json:"provider_name"`
+	Type          string `json:"type"`
+	Enabled       bool   `json:"enabled"`
+	HealthStatus  string `json:"health_status"`
+	CircuitOpen   bool   `json:"circuit_open"`
+	AvgLatencyMS  int64  `json:"avg_latency_ms"`
 }
 
 func (s *Store) ListModelUsage(ctx context.Context) ([]ModelUsageSummary, error) {

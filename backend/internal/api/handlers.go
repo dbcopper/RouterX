@@ -88,6 +88,17 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var resp models.ChatCompletionResponse
 	var routeErr error
 
+	// Parse provider sort preference from header
+	sortMode := router.SortDefault
+	if sortHeader := r.Header.Get("X-RouterX-Sort"); sortHeader != "" {
+		switch strings.ToLower(sortHeader) {
+		case "price":
+			sortMode = router.SortPrice
+		case "latency":
+			sortMode = router.SortLatency
+		}
+	}
+
 	if stream {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
@@ -107,9 +118,9 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 			return err
 		}
-		resp, providerName, fallbackUsed, ttft, tokens, routeErr = s.Router.Route(r.Context(), tenant.ID, req, true, send)
+		resp, providerName, fallbackUsed, ttft, tokens, routeErr = s.Router.RouteWithSort(r.Context(), tenant.ID, req, true, send, sortMode)
 	} else {
-		resp, providerName, fallbackUsed, ttft, tokens, routeErr = s.Router.Route(r.Context(), tenant.ID, req, false, nil)
+		resp, providerName, fallbackUsed, ttft, tokens, routeErr = s.Router.RouteWithSort(r.Context(), tenant.ID, req, false, nil, sortMode)
 	}
 
 	latency := time.Since(start)
@@ -855,6 +866,7 @@ func (s *Server) AdminProviderHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	circuitStates := s.Router.GetCircuitStates()
+	latencies := s.Router.GetProviderLatencies()
 	var result []store.ProviderHealthStatus
 	for _, p := range providers {
 		health := "unknown"
@@ -868,6 +880,10 @@ func (s *Server) AdminProviderHealth(w http.ResponseWriter, r *http.Request) {
 		if open, ok := circuitStates[p.ID]; ok {
 			circuitOpen = open
 		}
+		avgLatency := int64(0)
+		if l, ok := latencies[p.ID]; ok {
+			avgLatency = l
+		}
 		result = append(result, store.ProviderHealthStatus{
 			ProviderID:   p.ID,
 			ProviderName: p.Name,
@@ -875,6 +891,7 @@ func (s *Server) AdminProviderHealth(w http.ResponseWriter, r *http.Request) {
 			Enabled:      p.Enabled,
 			HealthStatus: health,
 			CircuitOpen:  circuitOpen,
+			AvgLatencyMS: avgLatency,
 		})
 	}
 	writeJSON(w, result)

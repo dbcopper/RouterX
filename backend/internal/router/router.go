@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -52,16 +53,56 @@ func (c *CircuitState) Record(ok bool) {
 	}
 }
 
+// LatencyTracker tracks rolling average latency per provider.
+type LatencyTracker struct {
+	Mu      sync.Mutex
+	Samples map[string][]time.Duration // providerID -> recent latencies
+	Window  int
+}
+
+func NewLatencyTracker(window int) *LatencyTracker {
+	return &LatencyTracker{Samples: map[string][]time.Duration{}, Window: window}
+}
+
+func (lt *LatencyTracker) Record(providerID string, d time.Duration) {
+	lt.Mu.Lock()
+	defer lt.Mu.Unlock()
+	s := append(lt.Samples[providerID], d)
+	if len(s) > lt.Window {
+		s = s[len(s)-lt.Window:]
+	}
+	lt.Samples[providerID] = s
+}
+
+func (lt *LatencyTracker) Average(providerID string) time.Duration {
+	lt.Mu.Lock()
+	defer lt.Mu.Unlock()
+	s := lt.Samples[providerID]
+	if len(s) == 0 {
+		return 0
+	}
+	var total time.Duration
+	for _, d := range s {
+		total += d
+	}
+	return total / time.Duration(len(s))
+}
+
 type Router struct {
 	Store        *store.Store
 	EnableReal   bool
 	Redis        *redis.Client
 	Circuits     map[string]*CircuitState
+	Latency      *LatencyTracker
 	Mu           sync.Mutex
 }
 
 func New(store *store.Store, enableReal bool, redisClient *redis.Client) *Router {
-	return &Router{Store: store, EnableReal: enableReal, Redis: redisClient, Circuits: map[string]*CircuitState{}}
+	return &Router{
+		Store: store, EnableReal: enableReal, Redis: redisClient,
+		Circuits: map[string]*CircuitState{},
+		Latency:  NewLatencyTracker(50),
+	}
 }
 
 func (r *Router) circuitFor(providerID string) *CircuitState {
@@ -75,12 +116,25 @@ func (r *Router) circuitFor(providerID string) *CircuitState {
 	return c
 }
 
+// SortMode controls how providers are sorted when multiple are available.
+type SortMode string
+
+const (
+	SortDefault SortMode = ""        // default: healthy first, then by latency
+	SortPrice   SortMode = "price"   // cheapest provider first
+	SortLatency SortMode = "latency" // lowest latency first
+)
+
 // Route implements OpenRouter-like auto-routing:
 // 1. Look up model in model_catalog -> provider_type
 // 2. Pick enabled providers of that type (try all for fallback)
 // 3. If model not in catalog, fall back to routing_rules (optional override)
 // 4. If nothing works, return clear error
 func (r *Router) Route(ctx context.Context, tenantID string, req models.ChatCompletionRequest, stream bool, send providers.StreamSender) (models.ChatCompletionResponse, string, bool, time.Duration, int, error) {
+	return r.RouteWithSort(ctx, tenantID, req, stream, send, SortDefault)
+}
+
+func (r *Router) RouteWithSort(ctx context.Context, tenantID string, req models.ChatCompletionRequest, stream bool, send providers.StreamSender, sortMode SortMode) (models.ChatCompletionResponse, string, bool, time.Duration, int, error) {
 	capability := "text"
 	if requestHasImage(req) {
 		capability = "vision"
@@ -103,7 +157,7 @@ func (r *Router) Route(ctx context.Context, tenantID string, req models.ChatComp
 	// Step 3: Try auto-routing via model_catalog
 	providerType, catalogOK, catalogErr := r.Store.GetModelProvider(ctx, req.Model)
 	if catalogOK && providerType != "" {
-		resp, providerName, fallback, ttft, tokens, err := r.tryProvidersByType(ctx, providerType, capability, req, stream, send)
+		resp, providerName, fallback, ttft, tokens, err := r.tryProvidersByType(ctx, providerType, capability, req, stream, send, sortMode)
 		if err == nil {
 			return resp, providerName, fallback, ttft, tokens, nil
 		}
@@ -144,8 +198,10 @@ func (r *Router) Route(ctx context.Context, tenantID string, req models.ChatComp
 	return models.ChatCompletionResponse{}, "", false, 0, 0, fmt.Errorf("no provider available for model %s (not in model_catalog, no routing rules for tenant %s)", req.Model, tenantID)
 }
 
-// tryProvidersByType tries all enabled providers of the given type, with fallback
-func (r *Router) tryProvidersByType(ctx context.Context, providerType, capability string, req models.ChatCompletionRequest, stream bool, send providers.StreamSender) (models.ChatCompletionResponse, string, bool, time.Duration, int, error) {
+// tryProvidersByType tries all enabled providers of the given type, with fallback.
+// Providers are sorted based on sortMode: price (cheapest first), latency (fastest first),
+// or default (healthy first, then by latency).
+func (r *Router) tryProvidersByType(ctx context.Context, providerType, capability string, req models.ChatCompletionRequest, stream bool, send providers.StreamSender, sortMode SortMode) (models.ChatCompletionResponse, string, bool, time.Duration, int, error) {
 	providersList, err := r.Store.GetEnabledProvidersByType(ctx, providerType)
 	if err != nil || len(providersList) == 0 {
 		return models.ChatCompletionResponse{}, "", false, 0, 0, errors.New("no enabled provider for type: " + providerType)
@@ -164,6 +220,37 @@ func (r *Router) tryProvidersByType(ctx context.Context, providerType, capabilit
 	}
 	if len(candidates) == 0 {
 		return models.ChatCompletionResponse{}, "", false, 0, 0, errors.New("no provider supports " + capability + " for type: " + providerType)
+	}
+
+	// Sort candidates based on mode
+	switch sortMode {
+	case SortLatency:
+		sort.Slice(candidates, func(i, j int) bool {
+			li := r.Latency.Average(candidates[i].ID)
+			lj := r.Latency.Average(candidates[j].ID)
+			if li == 0 {
+				return false
+			}
+			if lj == 0 {
+				return true
+			}
+			return li < lj
+		})
+	default:
+		// Default: prioritize healthy (non-circuit-open) providers, then by latency
+		sort.Slice(candidates, func(i, j int) bool {
+			ci := r.circuitFor(candidates[i].ID).Allow()
+			cj := r.circuitFor(candidates[j].ID).Allow()
+			if ci != cj {
+				return ci // healthy before unhealthy
+			}
+			li := r.Latency.Average(candidates[i].ID)
+			lj := r.Latency.Average(candidates[j].ID)
+			if li == 0 || lj == 0 {
+				return false
+			}
+			return li < lj
+		})
 	}
 
 	var lastErr error
@@ -195,6 +282,9 @@ func (r *Router) tryProvider(ctx context.Context, p *store.Provider, req models.
 	provider := providers.NewProvider(*p, r.EnableReal)
 	resp, ttft, tokens, err := provider.Chat(ctx, req, stream, send)
 	circuit.Record(err == nil)
+	if err == nil {
+		r.Latency.Record(p.ID, ttft)
+	}
 	if r.Redis != nil {
 		status := "ok"
 		if err != nil {
@@ -212,6 +302,17 @@ func requestHasImage(req models.ChatCompletionRequest) bool {
 		}
 	}
 	return false
+}
+
+func (r *Router) GetProviderLatencies() map[string]int64 {
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
+	out := map[string]int64{}
+	for id := range r.Circuits {
+		avg := r.Latency.Average(id)
+		out[id] = avg.Milliseconds()
+	}
+	return out
 }
 
 func (r *Router) GetCircuitStates() map[string]bool {
