@@ -3,6 +3,7 @@
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -136,8 +137,8 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		ErrorCode:    errCode(routeErr),
 		CreatedAt:    time.Now().UTC(),
 	})
-	_ = s.Store.AddUsageCost(r.Context(), tenant.ID, providerName, req.Model, tokens, cost, time.Now().UTC())
-	if cost > 0 {
+	if status == http.StatusOK && tokens > 0 && cost > 0 {
+		_ = s.Store.AddUsageCost(r.Context(), tenant.ID, providerName, req.Model, tokens, cost, time.Now().UTC())
 		_ = s.Store.UpdateTenantBalance(r.Context(), tenant.ID, tenant.BalanceUSD-cost)
 	}
 
@@ -331,6 +332,19 @@ func (s *Server) AdminUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
+func (s *Server) AdminClearProviderKey(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		http.Error(w, "missing provider id", http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.UpdateProviderAPIKey(r.Context(), id, ""); err != nil {
+		http.Error(w, "failed to clear api key", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
 func (s *Server) AdminCreateProvider(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Name           string `json:"name"`
@@ -377,26 +391,6 @@ func (s *Server) AdminTenants(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, items)
 }
 
-func (s *Server) AdminUpdateTenantBalance(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if id == "" {
-		http.Error(w, "missing tenant id", http.StatusBadRequest)
-		return
-	}
-	var payload struct {
-		BalanceUSD float64 `json:"balance_usd"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-	if err := s.Store.UpdateTenantBalance(r.Context(), id, payload.BalanceUSD); err != nil {
-		http.Error(w, "failed to update balance", http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, map[string]string{"status": "ok"})
-}
-
 func (s *Server) AdminRequests(w http.ResponseWriter, r *http.Request) {
 	logs, err := s.Store.ListRequestLogs(r.Context(), 100)
 	if err != nil {
@@ -404,6 +398,33 @@ func (s *Server) AdminRequests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, logs)
+}
+
+func (s *Server) AdminModelUsage(w http.ResponseWriter, r *http.Request) {
+	list, err := s.Store.ListModelUsage(r.Context())
+	if err != nil {
+		http.Error(w, "failed to list model usage", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, list)
+}
+
+func (s *Server) AdminDeleteRequest(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	if idStr == "" {
+		http.Error(w, "missing request id", http.StatusBadRequest)
+		return
+	}
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "invalid request id", http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.DeleteRequestLog(r.Context(), id); err != nil {
+		http.Error(w, "failed to delete request", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
 }
 
 func (s *Server) AdminListModelPricing(w http.ResponseWriter, r *http.Request) {
@@ -435,13 +456,60 @@ func (s *Server) AdminUpsertModelPricing(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
+func (s *Server) AdminListModels(w http.ResponseWriter, r *http.Request) {
+	providerType := r.URL.Query().Get("provider_type")
+	if providerType == "" {
+		http.Error(w, "provider_type required", http.StatusBadRequest)
+		return
+	}
+	list, err := s.Store.ListModelsByProviderType(r.Context(), providerType)
+	if err != nil {
+		http.Error(w, "failed to list models", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, list)
+}
+
+func (s *Server) AdminAddModel(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Model        string `json:"model"`
+		ProviderType string `json:"provider_type"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if payload.Model == "" || payload.ProviderType == "" {
+		http.Error(w, "model and provider_type required", http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.AddModelCatalog(r.Context(), payload.Model, payload.ProviderType); err != nil {
+		http.Error(w, "failed to add model", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) AdminDeleteModel(w http.ResponseWriter, r *http.Request) {
+	model := chi.URLParam(r, "model")
+	if model == "" {
+		http.Error(w, "missing model", http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.DeleteModelCatalog(r.Context(), model); err != nil {
+		http.Error(w, "failed to delete model", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
 func (s *Server) TenantUsage(w http.ResponseWriter, r *http.Request) {
 	user := middleware.TenantUserFromContext(r.Context())
 	if user == nil {
 		http.Error(w, "missing tenant", http.StatusUnauthorized)
 		return
 	}
-	rows, err := s.Store.DB.Query(r.Context(), `SELECT provider, model, day, tokens, cost_usd FROM usage_daily WHERE tenant_id=$1 ORDER BY day DESC LIMIT 30`, user.TenantID)
+	rows, err := s.Store.DB.Query(r.Context(), `SELECT provider, model, day, tokens, cost_usd FROM usage_daily WHERE tenant_id=$1 AND (tokens > 0 OR cost_usd > 0) ORDER BY day DESC LIMIT 30`, user.TenantID)
 	if err != nil {
 		http.Error(w, "failed to list usage", http.StatusInternalServerError)
 		return
@@ -464,6 +532,20 @@ func (s *Server) TenantUsage(w http.ResponseWriter, r *http.Request) {
 		out = append(out, u)
 	}
 	writeJSON(w, out)
+}
+
+func (s *Server) TenantSummary(w http.ResponseWriter, r *http.Request) {
+	user := middleware.TenantUserFromContext(r.Context())
+	if user == nil {
+		http.Error(w, "missing tenant", http.StatusUnauthorized)
+		return
+	}
+	summary, err := s.Store.GetTenantRequestSummary(r.Context(), user.TenantID)
+	if err != nil {
+		http.Error(w, "failed to load summary", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, summary)
 }
 
 func (s *Server) TenantAPIKeys(w http.ResponseWriter, r *http.Request) {
@@ -541,6 +623,228 @@ func (s *Server) TenantProfile(w http.ResponseWriter, r *http.Request) {
 		"username":  user.Username,
 		"balance_usd": tenant.BalanceUSD,
 	})
+}
+
+func (s *Server) TenantTopup(w http.ResponseWriter, r *http.Request) {
+	user := middleware.TenantUserFromContext(r.Context())
+	if user == nil {
+		http.Error(w, "missing tenant", http.StatusUnauthorized)
+		return
+	}
+	var payload struct {
+		Amount float64 `json:"amount_usd"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if payload.Amount <= 0 {
+		http.Error(w, "amount must be positive", http.StatusBadRequest)
+		return
+	}
+	tenant, err := s.Store.GetTenantByID(r.Context(), user.TenantID)
+	if err != nil {
+		http.Error(w, "failed to load tenant", http.StatusInternalServerError)
+		return
+	}
+	newBalance := tenant.BalanceUSD + payload.Amount
+	if err := s.Store.UpdateTenantBalance(r.Context(), user.TenantID, newBalance); err != nil {
+		http.Error(w, "failed to update balance", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]interface{}{"balance_usd": newBalance})
+}
+
+// ---- Admin Dashboard Stats ----
+
+func (s *Server) AdminDashboardStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := s.Store.GetAdminDashboardStats(r.Context())
+	if err != nil {
+		http.Error(w, "failed to load stats", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, stats)
+}
+
+// ---- Paginated Requests ----
+
+func (s *Server) AdminRequestsPaginated(w http.ResponseWriter, r *http.Request) {
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	if pageSize < 1 {
+		pageSize = 50
+	}
+	statusCode, _ := strconv.Atoi(r.URL.Query().Get("status_code"))
+	filters := store.RequestLogFilters{
+		TenantID:   r.URL.Query().Get("tenant_id"),
+		Provider:   r.URL.Query().Get("provider"),
+		Model:      r.URL.Query().Get("model"),
+		StatusCode: statusCode,
+		SortBy:     r.URL.Query().Get("sort_by"),
+		SortDir:    r.URL.Query().Get("sort_dir"),
+	}
+	result, err := s.Store.ListRequestLogsPaginated(r.Context(), page, pageSize, filters)
+	if err != nil {
+		http.Error(w, "failed to list requests", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, result)
+}
+
+// ---- Routing Rules CRUD ----
+
+func (s *Server) AdminRoutingRules(w http.ResponseWriter, r *http.Request) {
+	tenantID := r.URL.Query().Get("tenant_id")
+	if tenantID != "" {
+		rules, err := s.Store.ListRoutingRulesByTenant(r.Context(), tenantID)
+		if err != nil {
+			http.Error(w, "failed to list rules", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, rules)
+		return
+	}
+	rules, err := s.Store.ListRoutingRules(r.Context())
+	if err != nil {
+		http.Error(w, "failed to list rules", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, rules)
+}
+
+func (s *Server) AdminCreateRoutingRule(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		TenantID            string `json:"tenant_id"`
+		Capability          string `json:"capability"`
+		PrimaryProviderID   string `json:"primary_provider_id"`
+		SecondaryProviderID string `json:"secondary_provider_id"`
+		Model               string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if payload.TenantID == "" || payload.Capability == "" || payload.PrimaryProviderID == "" || payload.Model == "" {
+		http.Error(w, "tenant_id, capability, primary_provider_id, model required", http.StatusBadRequest)
+		return
+	}
+	rule := store.RoutingRule{
+		ID:                  ksuid.New().String(),
+		TenantID:            payload.TenantID,
+		Capability:          payload.Capability,
+		PrimaryProviderID:   payload.PrimaryProviderID,
+		SecondaryProviderID: payload.SecondaryProviderID,
+		Model:               payload.Model,
+	}
+	if err := s.Store.UpsertRoutingRule(r.Context(), rule); err != nil {
+		http.Error(w, "failed to create rule", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, rule)
+}
+
+func (s *Server) AdminUpdateRoutingRule(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		http.Error(w, "missing rule id", http.StatusBadRequest)
+		return
+	}
+	var payload struct {
+		TenantID            string `json:"tenant_id"`
+		Capability          string `json:"capability"`
+		PrimaryProviderID   string `json:"primary_provider_id"`
+		SecondaryProviderID string `json:"secondary_provider_id"`
+		Model               string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	rule := store.RoutingRule{
+		ID:                  id,
+		TenantID:            payload.TenantID,
+		Capability:          payload.Capability,
+		PrimaryProviderID:   payload.PrimaryProviderID,
+		SecondaryProviderID: payload.SecondaryProviderID,
+		Model:               payload.Model,
+	}
+	if err := s.Store.UpsertRoutingRule(r.Context(), rule); err != nil {
+		http.Error(w, "failed to update rule", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) AdminDeleteRoutingRule(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		http.Error(w, "missing rule id", http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.DeleteRoutingRule(r.Context(), id); err != nil {
+		http.Error(w, "failed to delete rule", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+// ---- Admin Balance Adjustment ----
+
+func (s *Server) AdminAdjustBalance(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		http.Error(w, "missing tenant id", http.StatusBadRequest)
+		return
+	}
+	var payload struct {
+		BalanceUSD float64 `json:"balance_usd"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.UpdateTenantBalance(r.Context(), id, payload.BalanceUSD); err != nil {
+		http.Error(w, "failed to update balance", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]interface{}{"status": "ok", "balance_usd": payload.BalanceUSD})
+}
+
+// ---- Provider Health ----
+
+func (s *Server) AdminProviderHealth(w http.ResponseWriter, r *http.Request) {
+	providers, err := s.Store.ListProviders(r.Context())
+	if err != nil {
+		http.Error(w, "failed to list providers", http.StatusInternalServerError)
+		return
+	}
+	circuitStates := s.Router.GetCircuitStates()
+	var result []store.ProviderHealthStatus
+	for _, p := range providers {
+		health := "unknown"
+		if s.Router.Redis != nil {
+			val, err := s.Router.Redis.Get(r.Context(), "provider_health:"+p.ID).Result()
+			if err == nil {
+				health = val
+			}
+		}
+		circuitOpen := false
+		if open, ok := circuitStates[p.ID]; ok {
+			circuitOpen = open
+		}
+		result = append(result, store.ProviderHealthStatus{
+			ProviderID:   p.ID,
+			ProviderName: p.Name,
+			Type:         p.Type,
+			Enabled:      p.Enabled,
+			HealthStatus: health,
+			CircuitOpen:  circuitOpen,
+		})
+	}
+	writeJSON(w, result)
 }
 
 func (s *Server) Health(w http.ResponseWriter, r *http.Request) {

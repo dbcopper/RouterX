@@ -1,8 +1,16 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Nav from '@/components/Nav';
-import { apiGet, apiPut, apiPost } from '@/lib/api';
+import StatusBadge from '@/components/StatusBadge';
+import { apiDelete, apiGet, apiPut, apiPost } from '@/lib/api';
+
+interface ProviderHealth {
+  provider_id: string;
+  health_status: string;
+  circuit_open: boolean;
+  enabled: boolean;
+}
 
 const PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
@@ -11,31 +19,62 @@ const PROVIDER_LABELS: Record<string, string> = {
   'generic-openai': 'Generic OpenAI-Compatible'
 };
 
-const MODEL_OPTIONS: Record<string, string[]> = {
-  openai: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1', 'gpt-3.5-turbo'],
-  anthropic: ['claude-3-5-sonnet', 'claude-3-5-haiku', 'claude-3-opus'],
-  gemini: ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-2.5-flash', 'gemini-1.0-pro'],
-  'generic-openai': ['custom-model']
-};
-
 export default function ProvidersPage() {
   const [items, setItems] = useState<any[]>([]);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
   const [selectedId, setSelectedId] = useState<string>('');
+  const [models, setModels] = useState<string[]>([]);
+  const [newModel, setNewModel] = useState('');
+  const [healthMap, setHealthMap] = useState<Record<string, ProviderHealth>>({});
+  const lastSavedKeyRef = useRef<{ id: string; key: string } | null>(null);
 
   const selected = useMemo(() => items.find((p) => p.id === selectedId) || items[0], [items, selectedId]);
 
   useEffect(() => {
     const token = localStorage.getItem('routerx_token') || '';
-            apiGet('/admin/providers', token)
-              .then((list) => {
-                const safe = Array.isArray(list) ? list : [];
-                setItems(safe);
-                if (safe.length && !selectedId) setSelectedId(safe[0].id);
-              })
-              .catch((err) => setError(err.message || 'Failed to load'));
+    apiGet('/admin/providers', token)
+      .then((list) => {
+        const safe = Array.isArray(list) ? list : [];
+        setItems(safe);
+        if (safe.length && !selectedId) setSelectedId(safe[0].id);
+      })
+      .catch((err) => setError(err.message || 'Failed to load'));
+    apiGet('/admin/provider-health', token)
+      .then((list) => {
+        const map: Record<string, ProviderHealth> = {};
+        if (Array.isArray(list)) list.forEach((h: ProviderHealth) => { map[h.provider_id] = h; });
+        setHealthMap(map);
+      })
+      .catch(() => {});
   }, [selectedId]);
+
+  useEffect(() => {
+    const token = localStorage.getItem('routerx_token') || '';
+    if (!selected?.type) {
+      setModels([]);
+      return;
+    }
+    apiGet(`/admin/models?provider_type=${encodeURIComponent(selected.type)}`, token)
+      .then((list) => setModels(Array.isArray(list) ? list : []))
+      .catch(() => setModels([]));
+  }, [selected?.type]);
+
+  useEffect(() => {
+    if (!selected?.id) return;
+    if (!selected.api_key) return;
+    if (lastSavedKeyRef.current?.id === selected.id && lastSavedKeyRef.current?.key === selected.api_key) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      saveProvider(selected).then(() => {
+        lastSavedKeyRef.current = { id: selected.id, key: selected.api_key };
+        updateField(selected.id, 'has_api_key', true);
+        updateField(selected.id, 'api_key', '');
+      });
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [selected?.id, selected?.api_key]);
 
   function updateField(id: string, key: string, value: any) {
     setItems((prev) => prev.map((p) => (p.id === id ? { ...p, [key]: value } : p)));
@@ -69,7 +108,7 @@ export default function ProvidersPage() {
         name: `Generic ${items.filter((p) => p.type === 'generic-openai').length + 1}`,
         type: 'generic-openai',
         base_url: '',
-        default_model: 'custom-model',
+        default_model: '',
         supports_text: true,
         supports_vision: false,
         enabled: true
@@ -80,6 +119,34 @@ export default function ProvidersPage() {
       setStatus('Generic provider added');
     } catch (err: any) {
       setError(err.message || 'Failed to add');
+    }
+  }
+
+  async function addModel() {
+    if (!selected?.type || !newModel.trim()) return;
+    setError('');
+    setStatus('');
+    try {
+      const token = localStorage.getItem('routerx_token') || '';
+      await apiPost('/admin/models', { model: newModel.trim(), provider_type: selected.type }, token);
+      setModels((prev) => Array.from(new Set([...prev, newModel.trim()])).sort());
+      setNewModel('');
+      setStatus('Model added');
+    } catch (err: any) {
+      setError(err.message || 'Failed to add model');
+    }
+  }
+
+  async function deleteModel(name: string) {
+    setError('');
+    setStatus('');
+    try {
+      const token = localStorage.getItem('routerx_token') || '';
+      await apiDelete(`/admin/models/${encodeURIComponent(name)}`, token);
+      setModels((prev) => prev.filter((m) => m !== name));
+      setStatus('Model removed');
+    } catch (err: any) {
+      setError(err.message || 'Failed to delete model');
     }
   }
 
@@ -110,8 +177,21 @@ export default function ProvidersPage() {
                   onClick={() => setSelectedId(p.id)}
                   className={`w-full text-left px-3 py-2 rounded-lg border ${p.id === selected?.id ? 'border-ink bg-white' : 'border-black/10 bg-white/70'}`}
                 >
-                  <div className="text-sm font-medium">{p.name || PROVIDER_LABELS[p.type] || p.type}</div>
-                  <div className="text-xs text-black/50">{p.type}</div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">{p.name || PROVIDER_LABELS[p.type] || p.type}</span>
+                    {healthMap[p.id] && (
+                      <StatusBadge
+                        status={
+                          !p.enabled ? 'inactive'
+                          : healthMap[p.id]?.circuit_open ? 'fail'
+                          : healthMap[p.id]?.health_status === 'ok' ? 'ok'
+                          : healthMap[p.id]?.health_status === 'fail' ? 'fail'
+                          : 'unknown'
+                        }
+                      />
+                    )}
+                  </div>
+                  <div className="text-xs text-black/50">{p.type}{!p.enabled ? ' · disabled' : ''}</div>
                 </button>
               ))}
             </div>
@@ -126,9 +206,6 @@ export default function ProvidersPage() {
                     <h2 className="text-xl font-semibold">{selected.name || PROVIDER_LABELS[selected.type] || selected.type}</h2>
                     <p className="text-xs text-black/60">ID: {selected.id}</p>
                   </div>
-                  <button className="px-3 py-2 rounded-lg bg-ink text-white" onClick={() => saveProvider(selected)}>
-                    Save
-                  </button>
                 </div>
 
                 <label className="block text-sm">
@@ -137,6 +214,13 @@ export default function ProvidersPage() {
                     className="mt-1 w-full border border-black/10 rounded-lg px-3 py-2"
                     value={selected.name || ''}
                     onChange={(e) => updateField(selected.id, 'name', e.target.value)}
+                    onBlur={() => saveProvider(selected)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        saveProvider(selected);
+                      }
+                    }}
                   />
                 </label>
 
@@ -148,59 +232,76 @@ export default function ProvidersPage() {
                     onChange={(e) => updateField(selected.id, 'base_url', e.target.value)}
                     placeholder={selected.type === 'generic-openai' ? 'https://api.example.com' : 'Managed by provider'}
                     disabled={selected.type !== 'generic-openai'}
+                    onBlur={() => saveProvider(selected)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        saveProvider(selected);
+                      }
+                    }}
                   />
                 </label>
 
                 <label className="block text-sm">
                   API Key (stored in DB)
-                  <input
-                    className="mt-1 w-full border border-black/10 rounded-lg px-3 py-2"
-                    value={selected.api_key || ''}
-                    onChange={(e) => updateField(selected.id, 'api_key', e.target.value)}
-                    placeholder="paste key"
-                  />
+                  <div className="mt-1 flex gap-2">
+                    <input
+                      className="flex-1 border border-black/10 rounded-lg px-3 py-2"
+                      value={selected.has_api_key ? '' : (selected.api_key || '')}
+                      onChange={(e) => updateField(selected.id, 'api_key', e.target.value)}
+                      placeholder={selected.has_api_key ? 'Saved. Use Clear to replace.' : 'paste key'}
+                      disabled={!!selected.has_api_key}
+                      onBlur={() => saveProvider(selected)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          saveProvider(selected);
+                        }
+                      }}
+                    />
+                    {selected.has_api_key && (
+                      <button
+                        className="px-3 py-2 rounded-lg border border-black/10 text-sm"
+                        onClick={async () => {
+                          try {
+                            const token = localStorage.getItem('routerx_token') || '';
+                            await apiDelete(`/admin/providers/${selected.id}/api-key`, token);
+                            updateField(selected.id, 'api_key', '');
+                            updateField(selected.id, 'has_api_key', false);
+                            setStatus('API key cleared');
+                          } catch (err: any) {
+                            setError(err.message || 'Failed to clear key');
+                          }
+                        }}
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
                 </label>
 
-                <label className="block text-sm">
-                  Default Model
-                  <input
-                    className="mt-1 w-full border border-black/10 rounded-lg px-3 py-2"
-                    value={selected.default_model || ''}
-                    list={`models-${selected.id}`}
-                    onChange={(e) => updateField(selected.id, 'default_model', e.target.value)}
-                  />
-                  <datalist id={`models-${selected.id}`}>
-                    {(MODEL_OPTIONS[selected.type] || []).map((m) => (
-                      <option key={m} value={m} />
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold">Models</h3>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      className="flex-1 border border-black/10 rounded-lg px-3 py-2 text-sm"
+                      value={newModel}
+                      onChange={(e) => setNewModel(e.target.value)}
+                      placeholder="e.g. gemini-2.5-flash"
+                    />
+                    <button className="px-3 py-2 rounded-lg bg-ink text-white text-sm" onClick={addModel}>Add</button>
+                  </div>
+                  <div className="border rounded-lg overflow-hidden text-sm">
+                    {!models.length && <div className="px-3 py-2 text-black/50">No models yet.</div>}
+                    {models.map((m) => (
+                      <div key={m} className="flex items-center justify-between px-3 py-2 border-t">
+                        <span className="text-sm">{m}</span>
+                        <button className="text-xs text-red-600 underline" onClick={() => deleteModel(m)}>Delete</button>
+                      </div>
                     ))}
-                  </datalist>
-                </label>
-
-                <div className="flex gap-4 text-sm">
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={!!selected.supports_text}
-                      onChange={(e) => updateField(selected.id, 'supports_text', e.target.checked)}
-                    />
-                    Text
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={!!selected.supports_vision}
-                      onChange={(e) => updateField(selected.id, 'supports_vision', e.target.checked)}
-                    />
-                    Vision
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={!!selected.enabled}
-                      onChange={(e) => updateField(selected.id, 'enabled', e.target.checked)}
-                    />
-                    Enabled
-                  </label>
+                  </div>
                 </div>
               </div>
             )}

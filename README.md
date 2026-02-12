@@ -15,7 +15,11 @@ RouterX is a provider-agnostic LLM/VLM gateway and router with a web-based Admin
    ```bash
    docker compose -f deploy/docker-compose.yml exec -T backend /routerx migrate
    docker compose -f deploy/docker-compose.yml exec -T backend /routerx seed
-   ```
+   ```> Note: `deploy.cmd` no longer seeds by default. To seed on deploy, run:
+> ```bash
+> set ROUTERX_SEED=1
+> deploy.cmd
+> ```
 4. Open the UI: `http://localhost:3000`
 5. Grafana: `http://localhost:3001` (default admin/admin)
 6. Jaeger: `http://localhost:16686`
@@ -98,3 +102,4 @@ python demo.py
 - `frontend/`: Next.js Admin Console.
 - `deploy/`: Docker Compose + observability.
 - `scripts/`: seed and load test scripts.
+

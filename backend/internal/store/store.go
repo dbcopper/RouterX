@@ -3,6 +3,7 @@
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,6 +20,7 @@ type Provider struct {
 	Type           string `json:"type"`
 	BaseURL        string `json:"base_url"`
 	APIKey         string `json:"-"`
+	HasAPIKey      bool   `json:"has_api_key"`
 	DefaultModel   string `json:"default_model"`
 	SupportsText   bool   `json:"supports_text"`
 	SupportsVision bool   `json:"supports_vision"`
@@ -73,6 +75,36 @@ type ModelCatalog struct {
 	ProviderType string `json:"provider_type"`
 }
 
+type TenantRequestSummary struct {
+	TotalRequests int              `json:"total_requests"`
+	TotalTokens   int              `json:"total_tokens"`
+	TotalCostUSD  float64          `json:"total_cost_usd"`
+	Daily         []TenantDayUsage `json:"daily"`
+	Recent        []TenantDayUsage `json:"recent"`
+	RecentModels  []TenantRecentModelUsage `json:"recent_models"`
+}
+
+type TenantDayUsage struct {
+	Day      time.Time `json:"day"`
+	Requests int       `json:"requests"`
+	Tokens   int       `json:"tokens"`
+	CostUSD  float64   `json:"cost_usd"`
+}
+
+type TenantRecentModelUsage struct {
+	Model  string    `json:"model"`
+	Bucket time.Time `json:"bucket"`
+	Tokens int       `json:"tokens"`
+}
+
+type ModelUsageSummary struct {
+	Model    string  `json:"model"`
+	Provider string  `json:"provider"`
+	Tokens   int     `json:"tokens"`
+	CostUSD  float64 `json:"cost_usd"`
+	Requests int     `json:"requests"`
+}
+
 func New(db *pgxpool.Pool) *Store {
 	return &Store{DB: db}
 }
@@ -107,6 +139,7 @@ func (s *Store) GetProviders(ctx context.Context) ([]Provider, error) {
 		if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &p.APIKey, &p.DefaultModel, &p.SupportsText, &p.SupportsVision, &p.Enabled); err != nil {
 			return nil, err
 		}
+		p.HasAPIKey = p.APIKey != ""
 		providers = append(providers, p)
 	}
 	return providers, rows.Err()
@@ -118,6 +151,7 @@ func (s *Store) GetProviderByID(ctx context.Context, id string) (*Provider, erro
 	if err := row.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &p.APIKey, &p.DefaultModel, &p.SupportsText, &p.SupportsVision, &p.Enabled); err != nil {
 		return nil, err
 	}
+	p.HasAPIKey = p.APIKey != ""
 	return &p, nil
 }
 
@@ -219,7 +253,7 @@ func (s *Store) ListAPIKeysByTenant(ctx context.Context, tenantID string) ([]API
 }
 
 func (s *Store) ListRequestLogs(ctx context.Context, limit int) ([]models.RequestLog, error) {
-	rows, err := s.DB.Query(ctx, `SELECT tenant_id, provider, model, latency_ms, ttft_ms, tokens, cost_usd, prompt_hash, fallback_used, status_code, error_code, created_at FROM request_logs ORDER BY created_at DESC LIMIT $1`, limit)
+	rows, err := s.DB.Query(ctx, `SELECT id, tenant_id, provider, model, latency_ms, ttft_ms, tokens, cost_usd, prompt_hash, fallback_used, status_code, error_code, created_at FROM request_logs ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -227,12 +261,17 @@ func (s *Store) ListRequestLogs(ctx context.Context, limit int) ([]models.Reques
 	var logs []models.RequestLog
 	for rows.Next() {
 		var l models.RequestLog
-		if err := rows.Scan(&l.TenantID, &l.Provider, &l.Model, &l.LatencyMS, &l.TTFTMS, &l.Tokens, &l.CostUSD, &l.PromptHash, &l.FallbackUsed, &l.StatusCode, &l.ErrorCode, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.TenantID, &l.Provider, &l.Model, &l.LatencyMS, &l.TTFTMS, &l.Tokens, &l.CostUSD, &l.PromptHash, &l.FallbackUsed, &l.StatusCode, &l.ErrorCode, &l.CreatedAt); err != nil {
 			return nil, err
 		}
 		logs = append(logs, l)
 	}
 	return logs, rows.Err()
+}
+
+func (s *Store) DeleteRequestLog(ctx context.Context, id int) error {
+	_, err := s.DB.Exec(ctx, `DELETE FROM request_logs WHERE id=$1`, id)
+	return err
 }
 
 func (s *Store) UpsertProvider(ctx context.Context, p Provider) error {
@@ -246,6 +285,11 @@ func (s *Store) UpsertProvider(ctx context.Context, p Provider) error {
 func (s *Store) UpdateProvider(ctx context.Context, p Provider) error {
 	_, err := s.DB.Exec(ctx, `UPDATE providers SET base_url=$2, api_key=$3, default_model=$4, supports_text=$5, supports_vision=$6, enabled=$7 WHERE id=$1`,
 		p.ID, p.BaseURL, p.APIKey, p.DefaultModel, p.SupportsText, p.SupportsVision, p.Enabled)
+	return err
+}
+
+func (s *Store) UpdateProviderAPIKey(ctx context.Context, id, apiKey string) error {
+	_, err := s.DB.Exec(ctx, `UPDATE providers SET api_key=$2 WHERE id=$1`, id, apiKey)
 	return err
 }
 
@@ -343,4 +387,352 @@ func (s *Store) GetModelProvider(ctx context.Context, model string) (string, boo
 		return "", false, err
 	}
 	return p, true, nil
+}
+
+func (s *Store) ListModelsByProviderType(ctx context.Context, providerType string) ([]string, error) {
+	rows, err := s.DB.Query(ctx, `SELECT model FROM model_catalog WHERE provider_type=$1 ORDER BY model`, providerType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var models []string
+	for rows.Next() {
+		var m string
+		if err := rows.Scan(&m); err != nil {
+			return nil, err
+		}
+		models = append(models, m)
+	}
+	return models, rows.Err()
+}
+
+func (s *Store) AddModelCatalog(ctx context.Context, model, providerType string) error {
+	_, err := s.DB.Exec(ctx, `INSERT INTO model_catalog (model, provider_type) VALUES ($1,$2) ON CONFLICT (model) DO UPDATE SET provider_type=EXCLUDED.provider_type`, model, providerType)
+	return err
+}
+
+func (s *Store) DeleteModelCatalog(ctx context.Context, model string) error {
+	_, err := s.DB.Exec(ctx, `DELETE FROM model_catalog WHERE model=$1`, model)
+	return err
+}
+
+func (s *Store) GetTenantRequestSummary(ctx context.Context, tenantID string) (*TenantRequestSummary, error) {
+	row := s.DB.QueryRow(ctx, `SELECT COUNT(*), COALESCE(SUM(tokens),0), COALESCE(SUM(cost_usd),0) FROM request_logs WHERE tenant_id=$1 AND status_code=200 AND tokens > 0`, tenantID)
+	var totalReq int
+	var totalTokens int
+	var totalCost float64
+	if err := row.Scan(&totalReq, &totalTokens, &totalCost); err != nil {
+		return nil, err
+	}
+	rows, err := s.DB.Query(ctx, `SELECT DATE(created_at) as day, COUNT(*), COALESCE(SUM(tokens),0), COALESCE(SUM(cost_usd),0) FROM request_logs WHERE tenant_id=$1 AND status_code=200 AND tokens > 0 GROUP BY day ORDER BY day`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var daily []TenantDayUsage
+	for rows.Next() {
+		var d TenantDayUsage
+		if err := rows.Scan(&d.Day, &d.Requests, &d.Tokens, &d.CostUSD); err != nil {
+			return nil, err
+		}
+		daily = append(daily, d)
+	}
+	recentRows, err := s.DB.Query(ctx, `
+		SELECT to_timestamp(floor(extract(epoch from created_at) / 10800) * 10800) as bucket_start,
+		       COUNT(*),
+		       COALESCE(SUM(tokens),0),
+		       COALESCE(SUM(cost_usd),0)
+		FROM request_logs
+		WHERE tenant_id=$1 AND status_code=200 AND tokens > 0 AND created_at >= NOW() - interval '24 hours'
+		GROUP BY bucket_start
+		ORDER BY bucket_start
+	`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer recentRows.Close()
+	recentMap := map[int64]TenantDayUsage{}
+	for recentRows.Next() {
+		var r TenantDayUsage
+		if err := recentRows.Scan(&r.Day, &r.Requests, &r.Tokens, &r.CostUSD); err != nil {
+			return nil, err
+		}
+		recentMap[r.Day.Unix()] = r
+	}
+	now := time.Now().UTC()
+	start := now.Add(-24 * time.Hour)
+	bucket := time.Duration(3) * time.Hour
+	var recent []TenantDayUsage
+	for i := 0; i < 8; i++ {
+		ts := start.Add(time.Duration(i) * bucket)
+		key := ts.Unix() - (ts.Unix() % int64(bucket.Seconds()))
+		if val, ok := recentMap[key]; ok {
+			recent = append(recent, val)
+		} else {
+			recent = append(recent, TenantDayUsage{Day: time.Unix(key, 0).UTC()})
+		}
+	}
+
+	recentModelRows, err := s.DB.Query(ctx, `
+		SELECT model,
+		       to_timestamp(floor(extract(epoch from created_at) / 10800) * 10800) as bucket_start,
+		       COALESCE(SUM(tokens),0)
+		FROM request_logs
+		WHERE tenant_id=$1 AND status_code=200 AND tokens > 0 AND created_at >= NOW() - interval '24 hours'
+		GROUP BY model, bucket_start
+		ORDER BY bucket_start
+	`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer recentModelRows.Close()
+	var recentModels []TenantRecentModelUsage
+	for recentModelRows.Next() {
+		var r TenantRecentModelUsage
+		if err := recentModelRows.Scan(&r.Model, &r.Bucket, &r.Tokens); err != nil {
+			return nil, err
+		}
+		recentModels = append(recentModels, r)
+	}
+	return &TenantRequestSummary{
+		TotalRequests: totalReq,
+		TotalTokens:   totalTokens,
+		TotalCostUSD:  totalCost,
+		Daily:         daily,
+		Recent:        recent,
+		RecentModels:  recentModels,
+	}, rows.Err()
+}
+
+// ---- Admin Dashboard Stats ----
+
+type HourlyBucket struct {
+	Hour     time.Time `json:"hour"`
+	Requests int       `json:"requests"`
+	Errors   int       `json:"errors"`
+}
+
+type AdminDashboardStats struct {
+	TotalTenants  int            `json:"total_tenants"`
+	ActiveTenants int            `json:"active_tenants"`
+	Requests24h   int            `json:"requests_24h"`
+	Errors24h     int            `json:"errors_24h"`
+	ErrorRate     float64        `json:"error_rate"`
+	AvgLatencyMS  float64        `json:"avg_latency_ms"`
+	P95LatencyMS  float64        `json:"p95_latency_ms"`
+	Cost24h       float64        `json:"cost_24h"`
+	Tokens24h     int            `json:"tokens_24h"`
+	HourlySeries  []HourlyBucket `json:"hourly_series"`
+}
+
+func (s *Store) GetAdminDashboardStats(ctx context.Context) (*AdminDashboardStats, error) {
+	stats := &AdminDashboardStats{}
+
+	// tenant counts
+	row := s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM tenants`)
+	_ = row.Scan(&stats.TotalTenants)
+
+	row = s.DB.QueryRow(ctx, `SELECT COUNT(*) FROM tenants WHERE last_active >= NOW() - interval '24 hours'`)
+	_ = row.Scan(&stats.ActiveTenants)
+
+	// 24h request stats
+	row = s.DB.QueryRow(ctx, `
+		SELECT COUNT(*),
+		       COUNT(*) FILTER (WHERE status_code >= 400),
+		       COALESCE(AVG(latency_ms), 0),
+		       COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms), 0),
+		       COALESCE(SUM(cost_usd), 0),
+		       COALESCE(SUM(tokens), 0)
+		FROM request_logs WHERE created_at >= NOW() - interval '24 hours'
+	`)
+	_ = row.Scan(&stats.Requests24h, &stats.Errors24h, &stats.AvgLatencyMS, &stats.P95LatencyMS, &stats.Cost24h, &stats.Tokens24h)
+
+	if stats.Requests24h > 0 {
+		stats.ErrorRate = float64(stats.Errors24h) / float64(stats.Requests24h) * 100
+	}
+
+	// hourly series
+	rows, err := s.DB.Query(ctx, `
+		SELECT date_trunc('hour', created_at) AS hour,
+		       COUNT(*),
+		       COUNT(*) FILTER (WHERE status_code >= 400)
+		FROM request_logs
+		WHERE created_at >= NOW() - interval '24 hours'
+		GROUP BY hour ORDER BY hour
+	`)
+	if err != nil {
+		return stats, nil
+	}
+	defer rows.Close()
+	hourMap := map[int64]HourlyBucket{}
+	for rows.Next() {
+		var b HourlyBucket
+		if err := rows.Scan(&b.Hour, &b.Requests, &b.Errors); err != nil {
+			continue
+		}
+		hourMap[b.Hour.Unix()] = b
+	}
+	now := time.Now().UTC()
+	for i := 23; i >= 0; i-- {
+		h := now.Add(-time.Duration(i) * time.Hour).Truncate(time.Hour)
+		if b, ok := hourMap[h.Unix()]; ok {
+			stats.HourlySeries = append(stats.HourlySeries, b)
+		} else {
+			stats.HourlySeries = append(stats.HourlySeries, HourlyBucket{Hour: h})
+		}
+	}
+
+	return stats, nil
+}
+
+// ---- Paginated Request Logs ----
+
+type RequestLogFilters struct {
+	TenantID   string
+	Provider   string
+	Model      string
+	StatusCode int
+	SortBy     string
+	SortDir    string
+}
+
+type PaginatedRequestLogs struct {
+	Data     []models.RequestLog `json:"data"`
+	Total    int                 `json:"total"`
+	Page     int                 `json:"page"`
+	PageSize int                 `json:"page_size"`
+}
+
+func (s *Store) ListRequestLogsPaginated(ctx context.Context, page, pageSize int, f RequestLogFilters) (*PaginatedRequestLogs, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 200 {
+		pageSize = 50
+	}
+
+	where := "WHERE 1=1"
+	args := []interface{}{}
+	argN := 1
+
+	if f.TenantID != "" {
+		where += fmt.Sprintf(" AND tenant_id=$%d", argN)
+		args = append(args, f.TenantID)
+		argN++
+	}
+	if f.Provider != "" {
+		where += fmt.Sprintf(" AND provider=$%d", argN)
+		args = append(args, f.Provider)
+		argN++
+	}
+	if f.Model != "" {
+		where += fmt.Sprintf(" AND model ILIKE $%d", argN)
+		args = append(args, "%"+f.Model+"%")
+		argN++
+	}
+	if f.StatusCode > 0 {
+		where += fmt.Sprintf(" AND status_code=$%d", argN)
+		args = append(args, f.StatusCode)
+		argN++
+	}
+
+	// count
+	var total int
+	countQ := "SELECT COUNT(*) FROM request_logs " + where
+	if err := s.DB.QueryRow(ctx, countQ, args...).Scan(&total); err != nil {
+		return nil, err
+	}
+
+	// sort
+	sortCol := "created_at"
+	switch f.SortBy {
+	case "latency_ms", "tokens", "cost_usd", "created_at", "model", "provider":
+		sortCol = f.SortBy
+	}
+	sortDir := "DESC"
+	if f.SortDir == "asc" {
+		sortDir = "ASC"
+	}
+
+	offset := (page - 1) * pageSize
+	dataQ := fmt.Sprintf(`SELECT id, tenant_id, provider, model, latency_ms, ttft_ms, tokens, cost_usd, prompt_hash, fallback_used, status_code, error_code, created_at
+		FROM request_logs %s ORDER BY %s %s LIMIT $%d OFFSET $%d`, where, sortCol, sortDir, argN, argN+1)
+	args = append(args, pageSize, offset)
+
+	rows, err := s.DB.Query(ctx, dataQ, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var logs []models.RequestLog
+	for rows.Next() {
+		var l models.RequestLog
+		if err := rows.Scan(&l.ID, &l.TenantID, &l.Provider, &l.Model, &l.LatencyMS, &l.TTFTMS, &l.Tokens, &l.CostUSD, &l.PromptHash, &l.FallbackUsed, &l.StatusCode, &l.ErrorCode, &l.CreatedAt); err != nil {
+			return nil, err
+		}
+		logs = append(logs, l)
+	}
+	return &PaginatedRequestLogs{Data: logs, Total: total, Page: page, PageSize: pageSize}, rows.Err()
+}
+
+// ---- Routing Rules ----
+
+func (s *Store) ListRoutingRulesByTenant(ctx context.Context, tenantID string) ([]RoutingRule, error) {
+	rows, err := s.DB.Query(ctx, `SELECT id, tenant_id, capability, primary_provider_id, COALESCE(secondary_provider_id,''), model FROM routing_rules WHERE tenant_id=$1 ORDER BY capability`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var rules []RoutingRule
+	for rows.Next() {
+		var r RoutingRule
+		if err := rows.Scan(&r.ID, &r.TenantID, &r.Capability, &r.PrimaryProviderID, &r.SecondaryProviderID, &r.Model); err != nil {
+			return nil, err
+		}
+		rules = append(rules, r)
+	}
+	return rules, rows.Err()
+}
+
+func (s *Store) DeleteRoutingRule(ctx context.Context, id string) error {
+	_, err := s.DB.Exec(ctx, `DELETE FROM routing_rules WHERE id=$1`, id)
+	return err
+}
+
+// ---- Provider Health ----
+
+type ProviderHealthStatus struct {
+	ProviderID   string `json:"provider_id"`
+	ProviderName string `json:"provider_name"`
+	Type         string `json:"type"`
+	Enabled      bool   `json:"enabled"`
+	HealthStatus string `json:"health_status"`
+	CircuitOpen  bool   `json:"circuit_open"`
+}
+
+func (s *Store) ListModelUsage(ctx context.Context) ([]ModelUsageSummary, error) {
+	rows, err := s.DB.Query(ctx, `
+		SELECT model,
+		       provider,
+		       COUNT(*) as requests,
+		       COALESCE(SUM(tokens),0) as tokens,
+		       COALESCE(SUM(cost_usd),0) as cost_usd
+		FROM request_logs
+		WHERE status_code=200 AND tokens > 0
+		GROUP BY model, provider
+		ORDER BY cost_usd DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []ModelUsageSummary
+	for rows.Next() {
+		var m ModelUsageSummary
+		if err := rows.Scan(&m.Model, &m.Provider, &m.Requests, &m.Tokens, &m.CostUSD); err != nil {
+			return nil, err
+		}
+		list = append(list, m)
+	}
+	return list, rows.Err()
 }

@@ -160,6 +160,16 @@ func requestHasImage(req models.ChatCompletionRequest) bool {
 	return false
 }
 
+func (r *Router) GetCircuitStates() map[string]bool {
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
+	states := map[string]bool{}
+	for id, c := range r.Circuits {
+		states[id] = !c.Allow()
+	}
+	return states
+}
+
 func (r *Router) pickProviderByType(ctx context.Context, providerType, capability string) (*store.Provider, bool) {
 	providersList, err := r.Store.GetProviders(ctx)
 	if err != nil {

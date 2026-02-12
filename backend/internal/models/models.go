@@ -58,6 +58,7 @@ type ErrorResponse struct {
 }
 
 type RequestLog struct {
+	ID           int       `json:"id"`
 	TenantID     string    `json:"tenant_id"`
 	Provider     string    `json:"provider"`
 	Model        string    `json:"model"`

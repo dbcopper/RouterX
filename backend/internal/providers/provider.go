@@ -108,9 +108,53 @@ func parseOpenAIResponse(resp *http.Response, model string) (models.ChatCompleti
 		b, _ := io.ReadAll(resp.Body)
 		return models.ChatCompletionResponse{}, errors.New(string(b))
 	}
-	var out models.ChatCompletionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	var raw struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Created int64  `json:"created"`
+		Model   string `json:"model"`
+		Choices []struct {
+			Index   int `json:"index"`
+			Message struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+			Finish string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage models.Usage `json:"usage"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return models.ChatCompletionResponse{}, err
+	}
+	out := models.ChatCompletionResponse{
+		ID:      raw.ID,
+		Object:  raw.Object,
+		Created: raw.Created,
+		Model:   raw.Model,
+		Usage:   raw.Usage,
+	}
+	for _, c := range raw.Choices {
+		msg := models.AssistantMessage{Role: c.Message.Role}
+		if len(c.Message.Content) == 0 || string(c.Message.Content) == "null" {
+			msg.Content = []models.ContentPart{}
+		} else if c.Message.Content[0] == '"' {
+			var s string
+			if err := json.Unmarshal(c.Message.Content, &s); err != nil {
+				return models.ChatCompletionResponse{}, err
+			}
+			msg.Content = []models.ContentPart{{Type: "text", Text: s}}
+		} else {
+			var parts []models.ContentPart
+			if err := json.Unmarshal(c.Message.Content, &parts); err != nil {
+				return models.ChatCompletionResponse{}, err
+			}
+			msg.Content = parts
+		}
+		out.Choices = append(out.Choices, models.Choice{
+			Index:   c.Index,
+			Message: msg,
+			Finish:  c.Finish,
+		})
 	}
 	if out.Model == "" {
 		out.Model = model
