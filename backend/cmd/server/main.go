@@ -24,6 +24,7 @@ import (
 	"routerx/internal/observability"
 	"routerx/internal/router"
 	"routerx/internal/store"
+	"routerx/internal/webhook"
 )
 
 func main() {
@@ -66,7 +67,8 @@ func main() {
 	metrics.Register()
 	lim := limiter.New(redisClient, 10, 5)
 
-	srv := &api.Server{Store: st, Router: r, Limiter: lim, Logger: logger, JWTSecret: cfg.JWTSecret}
+	wh := webhook.New(st)
+	srv := &api.Server{Store: st, Router: r, Limiter: lim, Logger: logger, JWTSecret: cfg.JWTSecret, Webhooks: wh}
 
 	router := chi.NewRouter()
 	router.Use(cors.Handler(cors.Options{AllowedOrigins: []string{"*"}, AllowedMethods: []string{"GET", "POST", "PUT", "DELETE"}, AllowedHeaders: []string{"*"}}))
@@ -115,6 +117,9 @@ func main() {
 			r.Post("/routing-rules", srv.AdminCreateRoutingRule)
 			r.Put("/routing-rules/{id}", srv.AdminUpdateRoutingRule)
 			r.Delete("/routing-rules/{id}", srv.AdminDeleteRoutingRule)
+			r.Get("/webhooks", srv.AdminListWebhooks)
+			r.Post("/webhooks", srv.AdminCreateWebhook)
+			r.Delete("/webhooks/{id}", srv.AdminDeleteWebhook)
 		})
 	})
 

@@ -862,3 +862,58 @@ func (s *Store) UpdateTenantLimits(ctx context.Context, tenantID string, rateLim
 	_, err := s.DB.Exec(ctx, `UPDATE tenants SET rate_limit_rpm=$2, spend_limit_usd=$3 WHERE id=$1`, tenantID, rateLimitRPM, spendLimitUSD)
 	return err
 }
+
+// ---- Webhooks ----
+
+type Webhook struct {
+	ID        int       `json:"id"`
+	URL       string    `json:"url"`
+	Events    []string  `json:"events"`
+	Secret    string    `json:"secret,omitempty"`
+	Enabled   bool      `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (s *Store) ListWebhooks(ctx context.Context) ([]Webhook, error) {
+	rows, err := s.DB.Query(ctx, `SELECT id, url, events, secret, enabled, created_at FROM webhooks ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var hooks []Webhook
+	for rows.Next() {
+		var h Webhook
+		if err := rows.Scan(&h.ID, &h.URL, &h.Events, &h.Secret, &h.Enabled, &h.CreatedAt); err != nil {
+			return nil, err
+		}
+		hooks = append(hooks, h)
+	}
+	return hooks, rows.Err()
+}
+
+func (s *Store) CreateWebhook(ctx context.Context, url string, events []string, secret string) error {
+	_, err := s.DB.Exec(ctx, `INSERT INTO webhooks (url, events, secret) VALUES ($1, $2, $3)`, url, events, secret)
+	return err
+}
+
+func (s *Store) DeleteWebhook(ctx context.Context, id int) error {
+	_, err := s.DB.Exec(ctx, `DELETE FROM webhooks WHERE id=$1`, id)
+	return err
+}
+
+func (s *Store) GetEnabledWebhooks(ctx context.Context, event string) ([]Webhook, error) {
+	rows, err := s.DB.Query(ctx, `SELECT id, url, events, secret, enabled, created_at FROM webhooks WHERE enabled=true AND $1=ANY(events)`, event)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var hooks []Webhook
+	for rows.Next() {
+		var h Webhook
+		if err := rows.Scan(&h.ID, &h.URL, &h.Events, &h.Secret, &h.Enabled, &h.CreatedAt); err != nil {
+			return nil, err
+		}
+		hooks = append(hooks, h)
+	}
+	return hooks, rows.Err()
+}

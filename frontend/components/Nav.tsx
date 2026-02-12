@@ -9,6 +9,7 @@ const links = [
   { href: '/pricing', label: 'Pricing' },
   { href: '/tenants', label: 'Tenants' },
   { href: '/requests', label: 'Requests' },
+  { href: '/webhooks', label: 'Webhooks' },
   { href: '/routing', label: 'Advanced Routing' }
 ];
 

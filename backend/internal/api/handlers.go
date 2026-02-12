@@ -21,6 +21,7 @@ import (
 	"routerx/internal/router"
 	"routerx/internal/store"
 	"routerx/internal/util"
+	"routerx/internal/webhook"
 
 	"go.uber.org/zap"
 )
@@ -31,6 +32,7 @@ type Server struct {
 	Limiter   *limiter.Limiter
 	Logger    *zap.Logger
 	JWTSecret string
+	Webhooks  *webhook.Dispatcher
 }
 
 func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -246,6 +248,21 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		zap.String("prompt_hash", promptHash),
 		zap.Bool("fallback", fallbackUsed),
 	)
+
+	// Fire webhook
+	if s.Webhooks != nil {
+		s.Webhooks.Fire(r.Context(), "request.completed", map[string]interface{}{
+			"tenant_id":    tenant.ID,
+			"provider":     providerName,
+			"model":        req.Model,
+			"latency_ms":   latency.Milliseconds(),
+			"tokens":       tokens,
+			"cost_usd":     cost,
+			"status_code":  status,
+			"fallback":     fallbackUsed,
+			"free_mode":    freeMode,
+		})
+	}
 
 	if !stream && routeErr == nil {
 		// Cache response if caching enabled
@@ -1272,4 +1289,56 @@ func contains(list []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// ---- Webhooks ----
+
+func (s *Server) AdminListWebhooks(w http.ResponseWriter, r *http.Request) {
+	hooks, err := s.Store.ListWebhooks(r.Context())
+	if err != nil {
+		http.Error(w, "failed to list webhooks", http.StatusInternalServerError)
+		return
+	}
+	if hooks == nil {
+		hooks = []store.Webhook{}
+	}
+	writeJSON(w, hooks)
+}
+
+func (s *Server) AdminCreateWebhook(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		URL    string   `json:"url"`
+		Events []string `json:"events"`
+		Secret string   `json:"secret"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if payload.URL == "" {
+		http.Error(w, "url required", http.StatusBadRequest)
+		return
+	}
+	if len(payload.Events) == 0 {
+		payload.Events = []string{"request.completed"}
+	}
+	if err := s.Store.CreateWebhook(r.Context(), payload.URL, payload.Events, payload.Secret); err != nil {
+		http.Error(w, "failed to create webhook", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) AdminDeleteWebhook(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.DeleteWebhook(r.Context(), id); err != nil {
+		http.Error(w, "failed to delete webhook", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
 }
