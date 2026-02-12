@@ -451,6 +451,29 @@ func (s *Store) DeleteModelCatalog(ctx context.Context, model string) error {
 	return err
 }
 
+type ModelInfo struct {
+	Model        string  `json:"id"`
+	ProviderType string  `json:"provider_type"`
+	PricePer1K   float64 `json:"price_per_1k_usd"`
+}
+
+func (s *Store) ListAllModels(ctx context.Context) ([]ModelInfo, error) {
+	rows, err := s.DB.Query(ctx, `SELECT mc.model, mc.provider_type, COALESCE(mp.price_per_1k_usd,0) FROM model_catalog mc LEFT JOIN model_pricing mp ON mc.model=mp.model ORDER BY mc.provider_type, mc.model`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ModelInfo
+	for rows.Next() {
+		var m ModelInfo
+		if err := rows.Scan(&m.Model, &m.ProviderType, &m.PricePer1K); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) GetTenantRequestSummary(ctx context.Context, tenantID string) (*TenantRequestSummary, error) {
 	row := s.DB.QueryRow(ctx, `SELECT COUNT(*), COALESCE(SUM(tokens),0), COALESCE(SUM(cost_usd),0) FROM request_logs WHERE tenant_id=$1 AND status_code=200 AND tokens > 0`, tenantID)
 	var totalReq int

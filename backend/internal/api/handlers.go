@@ -943,6 +943,34 @@ func (s *Server) AdminTenantTransactions(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, txs)
 }
 
+// ListModels returns OpenAI-compatible /v1/models response.
+func (s *Server) ListModels(w http.ResponseWriter, r *http.Request) {
+	items, err := s.Store.ListAllModels(r.Context())
+	if err != nil {
+		http.Error(w, "failed to list models", http.StatusInternalServerError)
+		return
+	}
+	type modelObj struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Created int64  `json:"created"`
+		OwnedBy string `json:"owned_by"`
+	}
+	data := make([]modelObj, 0, len(items))
+	for _, m := range items {
+		data = append(data, modelObj{
+			ID:      m.Model,
+			Object:  "model",
+			Created: 1700000000,
+			OwnedBy: m.ProviderType,
+		})
+	}
+	writeJSON(w, map[string]interface{}{
+		"object": "list",
+		"data":   data,
+	})
+}
+
 func (s *Server) Health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok"})
 }

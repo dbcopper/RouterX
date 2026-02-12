@@ -76,8 +76,11 @@ func main() {
 	router.Handle("/metrics", promhttp.Handler())
 
 	router.Route("/v1", func(r chi.Router) {
-		r.Use(middleware.WithAPIKey(st))
-		r.Post("/chat/completions", srv.ChatCompletions)
+		r.Get("/models", srv.ListModels)
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.WithAPIKey(st))
+			r.Post("/chat/completions", srv.ChatCompletions)
+		})
 	})
 
 	router.Route("/admin", func(r chi.Router) {
