@@ -41,6 +41,18 @@ func NewProvider(p store.Provider, enableReal bool) Provider {
 		return &anthropicProvider{baseProvider{info: p, enableReal: enableReal, httpClient: client, providerType: "anthropic"}}
 	case "gemini":
 		return &geminiProvider{baseProvider{info: p, enableReal: enableReal, httpClient: client, providerType: "gemini"}}
+	case "deepseek":
+		// DeepSeek uses OpenAI-compatible API
+		if p.BaseURL == "" {
+			p.BaseURL = "https://api.deepseek.com"
+		}
+		return &genericOpenAIProvider{baseProvider{info: p, enableReal: enableReal, httpClient: client, providerType: "deepseek"}}
+	case "mistral":
+		// Mistral uses OpenAI-compatible API
+		if p.BaseURL == "" {
+			p.BaseURL = "https://api.mistral.ai"
+		}
+		return &genericOpenAIProvider{baseProvider{info: p, enableReal: enableReal, httpClient: client, providerType: "mistral"}}
 	case "generic-openai":
 		return &genericOpenAIProvider{baseProvider{info: p, enableReal: enableReal, httpClient: client, providerType: "generic-openai"}}
 	default:
