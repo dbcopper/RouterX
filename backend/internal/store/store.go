@@ -300,6 +300,15 @@ func (s *Store) ListRequestLogs(ctx context.Context, limit int) ([]models.Reques
 	return logs, rows.Err()
 }
 
+func (s *Store) GetRequestLog(ctx context.Context, id int) (*models.RequestLog, error) {
+	row := s.DB.QueryRow(ctx, `SELECT id, tenant_id, provider, model, latency_ms, ttft_ms, tokens, cost_usd, prompt_hash, fallback_used, status_code, error_code, created_at FROM request_logs WHERE id=$1`, id)
+	var r models.RequestLog
+	if err := row.Scan(&r.ID, &r.TenantID, &r.Provider, &r.Model, &r.LatencyMS, &r.TTFTMS, &r.Tokens, &r.CostUSD, &r.PromptHash, &r.FallbackUsed, &r.StatusCode, &r.ErrorCode, &r.CreatedAt); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
 func (s *Store) DeleteRequestLog(ctx context.Context, id int) error {
 	_, err := s.DB.Exec(ctx, `DELETE FROM request_logs WHERE id=$1`, id)
 	return err

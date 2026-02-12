@@ -103,6 +103,7 @@ func main() {
 			r.Get("/requests", srv.AdminRequestsPaginated)
 			r.Get("/requests/export", srv.AdminExportRequestsCSV)
 			r.Delete("/requests/{id}", srv.AdminDeleteRequest)
+			r.Get("/generation/{id}", srv.AdminGetGeneration)
 			r.Get("/model-usage", srv.AdminModelUsage)
 			r.Get("/models", srv.AdminListModels)
 			r.Post("/models", srv.AdminAddModel)

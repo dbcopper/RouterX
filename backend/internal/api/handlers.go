@@ -121,6 +121,16 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	opts.AppTitle = r.Header.Get("X-Title")
 	opts.AppReferer = r.Header.Get("HTTP-Referer")
 
+	// Set routing metadata headers (available even for streaming)
+	setRoutingHeaders := func(provider string, latencyMs int64, costUSD float64, fallback bool) {
+		w.Header().Set("X-RouterX-Provider", provider)
+		w.Header().Set("X-RouterX-Latency-Ms", fmt.Sprintf("%d", latencyMs))
+		w.Header().Set("X-RouterX-Cost-USD", fmt.Sprintf("%.6f", costUSD))
+		if fallback {
+			w.Header().Set("X-RouterX-Fallback", "true")
+		}
+	}
+
 	if stream {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
@@ -130,8 +140,10 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "stream unsupported", http.StatusInternalServerError)
 			return
 		}
+		streamDone := false
 		send := func(event string) error {
 			if event == "[DONE]" {
+				streamDone = true
 				_, _ = w.Write([]byte("data: [DONE]\n\n"))
 				flusher.Flush()
 				return nil
@@ -141,6 +153,11 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		resp, providerName, fallbackUsed, ttft, tokens, routeErr = s.Router.RouteWith(r.Context(), tenant.ID, req, true, send, opts)
+		// After stream completes, emit metadata as SSE comment
+		if streamDone {
+			_, _ = w.Write([]byte(fmt.Sprintf(": provider=%s latency_ms=%d fallback=%v\n\n", providerName, time.Since(start).Milliseconds(), fallbackUsed)))
+			flusher.Flush()
+		}
 	} else {
 		resp, providerName, fallbackUsed, ttft, tokens, routeErr = s.Router.RouteWith(r.Context(), tenant.ID, req, false, nil, opts)
 	}
@@ -178,6 +195,11 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		ErrorCode:    errCode(routeErr),
 		CreatedAt:    time.Now().UTC(),
 	})
+	// Set metadata headers (for non-stream, headers haven't been flushed yet)
+	if !stream {
+		setRoutingHeaders(providerName, latency.Milliseconds(), cost, fallbackUsed)
+	}
+
 	if status == http.StatusOK && tokens > 0 && cost > 0 {
 		_ = s.Store.AddUsageCost(r.Context(), tenant.ID, providerName, req.Model, tokens, cost, time.Now().UTC())
 		newBalance := tenant.BalanceUSD - cost
@@ -468,6 +490,35 @@ func (s *Server) AdminDeleteRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) AdminGetGeneration(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	log, err := s.Store.GetRequestLog(r.Context(), id)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, map[string]interface{}{
+		"id":            log.ID,
+		"tenant_id":     log.TenantID,
+		"provider":      log.Provider,
+		"model":         log.Model,
+		"latency_ms":    log.LatencyMS,
+		"ttft_ms":       log.TTFTMS,
+		"tokens":        log.Tokens,
+		"cost_usd":      log.CostUSD,
+		"prompt_hash":   log.PromptHash,
+		"fallback_used": log.FallbackUsed,
+		"status_code":   log.StatusCode,
+		"error_code":    log.ErrorCode,
+		"created_at":    log.CreatedAt,
+	})
 }
 
 func (s *Server) AdminListModelPricing(w http.ResponseWriter, r *http.Request) {
