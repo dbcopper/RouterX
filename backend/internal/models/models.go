@@ -151,6 +151,9 @@ type RequestLog struct {
 	FallbackUsed bool      `json:"fallback_used"`
 	StatusCode   int       `json:"status_code"`
 	ErrorCode    string    `json:"error_code"`
+	UserID       string    `json:"user_id,omitempty"`
+	AppTitle     string    `json:"app_title,omitempty"`
+	AppReferer   string    `json:"app_referer,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 

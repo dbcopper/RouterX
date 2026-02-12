@@ -205,8 +205,8 @@ func (s *Store) GetRoutingRule(ctx context.Context, tenantID, capability string)
 }
 
 func (s *Store) InsertRequestLog(ctx context.Context, log models.RequestLog) error {
-	_, err := s.DB.Exec(ctx, `INSERT INTO request_logs (tenant_id, provider, model, latency_ms, ttft_ms, tokens, cost_usd, prompt_hash, fallback_used, status_code, error_code, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)` ,
-		log.TenantID, log.Provider, log.Model, log.LatencyMS, log.TTFTMS, log.Tokens, log.CostUSD, log.PromptHash, log.FallbackUsed, log.StatusCode, log.ErrorCode, log.CreatedAt)
+	_, err := s.DB.Exec(ctx, `INSERT INTO request_logs (tenant_id, provider, model, latency_ms, ttft_ms, tokens, cost_usd, prompt_hash, fallback_used, status_code, error_code, user_id, app_title, app_referer, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		log.TenantID, log.Provider, log.Model, log.LatencyMS, log.TTFTMS, log.Tokens, log.CostUSD, log.PromptHash, log.FallbackUsed, log.StatusCode, log.ErrorCode, log.UserID, log.AppTitle, log.AppReferer, log.CreatedAt)
 	return err
 }
 
@@ -301,9 +301,9 @@ func (s *Store) ListRequestLogs(ctx context.Context, limit int) ([]models.Reques
 }
 
 func (s *Store) GetRequestLog(ctx context.Context, id int) (*models.RequestLog, error) {
-	row := s.DB.QueryRow(ctx, `SELECT id, tenant_id, provider, model, latency_ms, ttft_ms, tokens, cost_usd, prompt_hash, fallback_used, status_code, error_code, created_at FROM request_logs WHERE id=$1`, id)
+	row := s.DB.QueryRow(ctx, `SELECT id, tenant_id, provider, model, latency_ms, ttft_ms, tokens, cost_usd, prompt_hash, fallback_used, status_code, error_code, user_id, app_title, app_referer, created_at FROM request_logs WHERE id=$1`, id)
 	var r models.RequestLog
-	if err := row.Scan(&r.ID, &r.TenantID, &r.Provider, &r.Model, &r.LatencyMS, &r.TTFTMS, &r.Tokens, &r.CostUSD, &r.PromptHash, &r.FallbackUsed, &r.StatusCode, &r.ErrorCode, &r.CreatedAt); err != nil {
+	if err := row.Scan(&r.ID, &r.TenantID, &r.Provider, &r.Model, &r.LatencyMS, &r.TTFTMS, &r.Tokens, &r.CostUSD, &r.PromptHash, &r.FallbackUsed, &r.StatusCode, &r.ErrorCode, &r.UserID, &r.AppTitle, &r.AppReferer, &r.CreatedAt); err != nil {
 		return nil, err
 	}
 	return &r, nil

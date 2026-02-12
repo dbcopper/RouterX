@@ -193,6 +193,9 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		FallbackUsed: fallbackUsed,
 		StatusCode:   status,
 		ErrorCode:    errCode(routeErr),
+		UserID:       opts.UserID,
+		AppTitle:     opts.AppTitle,
+		AppReferer:   opts.AppReferer,
 		CreatedAt:    time.Now().UTC(),
 	})
 	// Set metadata headers (for non-stream, headers haven't been flushed yet)
@@ -504,21 +507,7 @@ func (s *Server) AdminGetGeneration(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, map[string]interface{}{
-		"id":            log.ID,
-		"tenant_id":     log.TenantID,
-		"provider":      log.Provider,
-		"model":         log.Model,
-		"latency_ms":    log.LatencyMS,
-		"ttft_ms":       log.TTFTMS,
-		"tokens":        log.Tokens,
-		"cost_usd":      log.CostUSD,
-		"prompt_hash":   log.PromptHash,
-		"fallback_used": log.FallbackUsed,
-		"status_code":   log.StatusCode,
-		"error_code":    log.ErrorCode,
-		"created_at":    log.CreatedAt,
-	})
+	writeJSON(w, log)
 }
 
 func (s *Server) AdminListModelPricing(w http.ResponseWriter, r *http.Request) {
