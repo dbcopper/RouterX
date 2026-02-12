@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Nav from '@/components/Nav';
 import StatusBadge from '@/components/StatusBadge';
-import { apiGet, apiPost } from '@/lib/api';
+import { apiGet, apiPost, apiPut } from '@/lib/api';
 
 interface TenantDetail {
   id: string;
@@ -15,6 +15,8 @@ interface TenantDetail {
   suspended: boolean;
   total_topup_usd: number;
   total_spent_usd: number;
+  rate_limit_rpm: number;
+  spend_limit_usd: number;
 }
 
 interface Transaction {
@@ -43,6 +45,12 @@ export default function TenantDetailPage() {
   const [newBalance, setNewBalance] = useState('');
   const [adjustDesc, setAdjustDesc] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Limits
+  const [editRPM, setEditRPM] = useState('');
+  const [editSpendLimit, setEditSpendLimit] = useState('');
+  const [showLimits, setShowLimits] = useState(false);
+  const [savingLimits, setSavingLimits] = useState(false);
 
   function token() {
     return typeof window !== 'undefined' ? localStorage.getItem('routerx_token') || '' : '';
@@ -95,6 +103,24 @@ export default function TenantDetailPage() {
       setError(err.message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function saveLimits() {
+    setSavingLimits(true);
+    setError('');
+    try {
+      await apiPut(`/admin/tenants/${tenantId}/limits`, {
+        rate_limit_rpm: parseInt(editRPM) || 60,
+        spend_limit_usd: parseFloat(editSpendLimit) || 0
+      }, token());
+      setShowLimits(false);
+      setStatus('Limits updated');
+      load();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSavingLimits(false);
     }
   }
 
@@ -201,12 +227,29 @@ export default function TenantDetailPage() {
             </div>
           </div>
 
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mt-4 pt-4 border-t border-black/5">
+            <div>
+              <p className="text-xs text-black/50 uppercase tracking-wide">Rate Limit</p>
+              <p className="text-lg font-semibold mt-1">{tenant.rate_limit_rpm} RPM</p>
+            </div>
+            <div>
+              <p className="text-xs text-black/50 uppercase tracking-wide">Spend Limit</p>
+              <p className="text-lg font-semibold mt-1">{tenant.spend_limit_usd > 0 ? `$${Number(tenant.spend_limit_usd).toFixed(2)}` : 'None'}</p>
+            </div>
+          </div>
+
           <div className="flex items-center gap-3 mt-6 pt-4 border-t border-black/5">
             <button
               onClick={() => { setShowAdjust(true); setNewBalance(String(tenant.balance_usd || 0)); setAdjustDesc(''); }}
               className="text-sm px-4 py-2 rounded-lg bg-black text-white hover:bg-black/80"
             >
               Adjust Balance
+            </button>
+            <button
+              onClick={() => { setShowLimits(true); setEditRPM(String(tenant.rate_limit_rpm || 60)); setEditSpendLimit(String(tenant.spend_limit_usd || 0)); }}
+              className="text-sm px-4 py-2 rounded-lg border border-black/10 hover:bg-black/5"
+            >
+              Configure Limits
             </button>
             <button
               onClick={toggleSuspend}
@@ -270,6 +313,36 @@ export default function TenantDetailPage() {
           )}
         </div>
       </div>
+
+      {/* Limits Modal */}
+      {showLimits && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-xl p-6 max-w-sm w-full mx-4">
+            <h3 className="font-semibold text-lg mb-4">Configure Limits</h3>
+            <label className="text-sm font-medium">Rate Limit (requests/min)</label>
+            <input
+              type="number"
+              value={editRPM}
+              onChange={(e) => setEditRPM(e.target.value)}
+              className="w-full mt-1 px-3 py-2 border border-black/10 rounded-lg text-sm"
+            />
+            <label className="text-sm font-medium mt-3 block">Spend Limit (USD, 0 = unlimited)</label>
+            <input
+              type="number"
+              step="0.01"
+              value={editSpendLimit}
+              onChange={(e) => setEditSpendLimit(e.target.value)}
+              className="w-full mt-1 px-3 py-2 border border-black/10 rounded-lg text-sm"
+            />
+            <div className="flex justify-end gap-3 mt-6">
+              <button onClick={() => setShowLimits(false)} className="px-4 py-2 text-sm rounded-lg border border-black/10 hover:bg-black/5">Cancel</button>
+              <button onClick={saveLimits} disabled={savingLimits} className="px-4 py-2 text-sm rounded-lg bg-black text-white hover:bg-black/80 disabled:opacity-50">
+                {savingLimits ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Adjust Balance Modal */}
       {showAdjust && (

@@ -99,6 +99,7 @@ func main() {
 			r.Post("/tenants/{id}/balance", srv.AdminAdjustBalance)
 			r.Post("/tenants/{id}/suspend", srv.AdminSuspendTenant)
 			r.Post("/tenants/{id}/unsuspend", srv.AdminUnsuspendTenant)
+			r.Put("/tenants/{id}/limits", srv.AdminUpdateTenantLimits)
 			r.Get("/tenants/{id}/transactions", srv.AdminTenantTransactions)
 			r.Get("/requests", srv.AdminRequestsPaginated)
 			r.Get("/requests/export", srv.AdminExportRequestsCSV)

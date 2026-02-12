@@ -44,6 +44,11 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "account suspended", http.StatusForbidden)
 		return
 	}
+	// Check spend limit
+	if tenant.SpendLimitUSD > 0 && tenant.TotalSpentUSD >= tenant.SpendLimitUSD {
+		http.Error(w, "spending limit reached", http.StatusPaymentRequired)
+		return
+	}
 	allowed, err := s.Limiter.Allow(r.Context(), tenant.ID)
 	if err != nil || !allowed {
 		http.Error(w, "rate limited", http.StatusTooManyRequests)
@@ -982,6 +987,27 @@ func (s *Server) AdminUnsuspendTenant(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.Store.SuspendTenant(r.Context(), id, false); err != nil {
 		http.Error(w, "failed to unsuspend tenant", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) AdminUpdateTenantLimits(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		http.Error(w, "missing tenant id", http.StatusBadRequest)
+		return
+	}
+	var payload struct {
+		RateLimitRPM  int     `json:"rate_limit_rpm"`
+		SpendLimitUSD float64 `json:"spend_limit_usd"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.UpdateTenantLimits(r.Context(), id, payload.RateLimitRPM, payload.SpendLimitUSD); err != nil {
+		http.Error(w, "failed to update limits", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, map[string]string{"status": "ok"})

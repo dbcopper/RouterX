@@ -45,6 +45,8 @@ type Tenant struct {
 	Suspended     bool       `json:"suspended"`
 	TotalTopupUSD float64    `json:"total_topup_usd"`
 	TotalSpentUSD float64    `json:"total_spent_usd"`
+	RateLimitRPM  int        `json:"rate_limit_rpm"`
+	SpendLimitUSD float64    `json:"spend_limit_usd"`
 }
 
 type APIKey struct {
@@ -187,9 +189,9 @@ func (s *Store) GetEnabledProvidersByType(ctx context.Context, providerType stri
 }
 
 func (s *Store) GetTenantByID(ctx context.Context, id string) (*Tenant, error) {
-	row := s.DB.QueryRow(ctx, `SELECT id, name, balance_usd, created_at, last_active, suspended, total_topup_usd, total_spent_usd FROM tenants WHERE id=$1`, id)
+	row := s.DB.QueryRow(ctx, `SELECT id, name, balance_usd, created_at, last_active, suspended, total_topup_usd, total_spent_usd, rate_limit_rpm, spend_limit_usd FROM tenants WHERE id=$1`, id)
 	var t Tenant
-	if err := row.Scan(&t.ID, &t.Name, &t.BalanceUSD, &t.CreatedAt, &t.LastActive, &t.Suspended, &t.TotalTopupUSD, &t.TotalSpentUSD); err != nil {
+	if err := row.Scan(&t.ID, &t.Name, &t.BalanceUSD, &t.CreatedAt, &t.LastActive, &t.Suspended, &t.TotalTopupUSD, &t.TotalSpentUSD, &t.RateLimitRPM, &t.SpendLimitUSD); err != nil {
 		return nil, err
 	}
 	return &t, nil
@@ -250,7 +252,7 @@ func (s *Store) ListRoutingRules(ctx context.Context) ([]RoutingRule, error) {
 }
 
 func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
-	rows, err := s.DB.Query(ctx, `SELECT id, name, balance_usd, created_at, last_active, suspended, total_topup_usd, total_spent_usd FROM tenants ORDER BY created_at DESC`)
+	rows, err := s.DB.Query(ctx, `SELECT id, name, balance_usd, created_at, last_active, suspended, total_topup_usd, total_spent_usd, rate_limit_rpm, spend_limit_usd FROM tenants ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +260,7 @@ func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
 	var tenants []Tenant
 	for rows.Next() {
 		var t Tenant
-		if err := rows.Scan(&t.ID, &t.Name, &t.BalanceUSD, &t.CreatedAt, &t.LastActive, &t.Suspended, &t.TotalTopupUSD, &t.TotalSpentUSD); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.BalanceUSD, &t.CreatedAt, &t.LastActive, &t.Suspended, &t.TotalTopupUSD, &t.TotalSpentUSD, &t.RateLimitRPM, &t.SpendLimitUSD); err != nil {
 			return nil, err
 		}
 		tenants = append(tenants, t)
@@ -853,5 +855,10 @@ func (s *Store) ListTransactions(ctx context.Context, tenantID string, limit int
 
 func (s *Store) SuspendTenant(ctx context.Context, tenantID string, suspended bool) error {
 	_, err := s.DB.Exec(ctx, `UPDATE tenants SET suspended=$2 WHERE id=$1`, tenantID, suspended)
+	return err
+}
+
+func (s *Store) UpdateTenantLimits(ctx context.Context, tenantID string, rateLimitRPM int, spendLimitUSD float64) error {
+	_, err := s.DB.Exec(ctx, `UPDATE tenants SET rate_limit_rpm=$2, spend_limit_usd=$3 WHERE id=$1`, tenantID, rateLimitRPM, spendLimitUSD)
 	return err
 }
