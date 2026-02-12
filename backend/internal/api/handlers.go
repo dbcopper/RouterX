@@ -1,8 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -941,6 +943,91 @@ func (s *Server) AdminTenantTransactions(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, txs)
+}
+
+// Embeddings proxies embedding requests to the appropriate provider.
+func (s *Server) Embeddings(w http.ResponseWriter, r *http.Request) {
+	tenant := middleware.TenantFromContext(r.Context())
+	if tenant == nil {
+		http.Error(w, "missing tenant", http.StatusUnauthorized)
+		return
+	}
+	if tenant.Suspended {
+		http.Error(w, "account suspended", http.StatusForbidden)
+		return
+	}
+	if tenant.BalanceUSD <= 0 {
+		http.Error(w, "insufficient balance", http.StatusPaymentRequired)
+		return
+	}
+
+	// Read raw body and forward to an OpenAI-compatible provider
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+
+	// Parse model from request
+	var parsed struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(bodyBytes, &parsed); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	// Find provider for this model
+	providerType, ok, _ := s.Store.GetModelProvider(r.Context(), parsed.Model)
+	if !ok || providerType == "" {
+		providerType = "openai" // default to openai for embeddings
+	}
+
+	providers, err := s.Store.GetEnabledProvidersByType(r.Context(), providerType)
+	if err != nil || len(providers) == 0 {
+		http.Error(w, "no provider available for embeddings", http.StatusBadGateway)
+		return
+	}
+
+	var lastErr error
+	for _, p := range providers {
+		if p.APIKey == "" {
+			continue
+		}
+		url := "https://api.openai.com/v1/embeddings"
+		if providerType == "generic-openai" && p.BaseURL != "" {
+			url = strings.TrimRight(p.BaseURL, "/") + "/v1/embeddings"
+		}
+
+		req, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, url, bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+p.APIKey)
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 300 {
+			b, _ := io.ReadAll(resp.Body)
+			lastErr = fmt.Errorf("%s", string(b))
+			continue
+		}
+
+		// Forward the response directly
+		w.Header().Set("Content-Type", "application/json")
+		io.Copy(w, resp.Body)
+		return
+	}
+
+	if lastErr != nil {
+		writeError(w, fmt.Errorf("embeddings failed: %w", lastErr))
+		return
+	}
+	http.Error(w, "no provider with API key for embeddings", http.StatusBadGateway)
 }
 
 // ListModels returns OpenAI-compatible /v1/models response.

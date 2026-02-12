@@ -80,6 +80,7 @@ func main() {
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.WithAPIKey(st))
 			r.Post("/chat/completions", srv.ChatCompletions)
+			r.Post("/embeddings", srv.Embeddings)
 		})
 	})
 
