@@ -160,9 +160,9 @@ export default function LandingPage() {
       <FloatingOrb delay={2} size={200} x={70} y={60} />
       <FloatingOrb delay={4} size={250} x={50} y={10} />
 
-      <div className="relative z-10 min-h-screen flex">
+      <div className="relative z-10 min-h-screen flex items-center justify-center gap-12 lg:gap-20 px-8 lg:px-16 max-w-7xl mx-auto">
         {/* Left: Hero + Animation */}
-        <div className={`flex-1 flex flex-col justify-center px-12 lg:px-20 transition-all duration-1000 ${mounted ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-10'}`}>
+        <div className={`flex-1 flex flex-col justify-center max-w-xl transition-all duration-1000 ${mounted ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-10'}`}>
           {/* Logo */}
           <div className="flex items-center gap-3 mb-10">
             <div className="w-10 h-10 rounded-xl bg-ink flex items-center justify-center shadow-lg shadow-ink/20">
@@ -203,7 +203,7 @@ export default function LandingPage() {
         </div>
 
         {/* Right: Login card */}
-        <div className={`w-full max-w-md flex items-center px-8 lg:px-12 transition-all duration-1000 delay-300 ${mounted ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-10'}`}>
+        <div className={`w-full max-w-sm flex items-center transition-all duration-1000 delay-300 ${mounted ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-10'}`}>
           <div className="w-full bg-white/80 backdrop-blur-xl border border-black/10 rounded-2xl shadow-xl shadow-black/5 p-8">
             <h2 className="text-xl font-semibold">
               {mode === 'login' ? 'Welcome back' : 'Create account'}
