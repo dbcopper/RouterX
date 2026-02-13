@@ -3,7 +3,7 @@
 import { usePathname } from 'next/navigation';
 import Sidebar from './Sidebar';
 
-const noSidebarPaths = ['/login', '/user-login', '/user/dashboard', '/user'];
+const noSidebarPaths = ['/', '/login', '/user-login', '/user/dashboard', '/user'];
 
 export default function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
