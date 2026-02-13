@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import Nav from '@/components/Nav';
+
 import { apiGet, apiPost, apiDelete } from '@/lib/api';
 
 interface Webhook {
@@ -72,12 +72,9 @@ export default function WebhooksPage() {
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-semibold">Webhooks</h1>
-            <p className="text-sm text-black/50">Receive real-time notifications for API events</p>
-          </div>
-          <Nav />
+        <div>
+          <h1 className="text-2xl font-semibold">Webhooks</h1>
+          <p className="text-sm text-black/50">Receive real-time notifications for API events</p>
         </div>
 
         {error && (

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import Nav from '@/components/Nav';
+
 import ConfirmModal from '@/components/ConfirmModal';
 import { apiGet, apiPost, apiPut, apiDelete } from '@/lib/api';
 
@@ -130,12 +130,9 @@ export default function RoutingPage() {
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-7xl mx-auto space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-semibold">Advanced Routing</h1>
-            <p className="text-sm text-black/50">Optional routing overrides per tenant</p>
-          </div>
-          <Nav />
+        <div>
+          <h1 className="text-2xl font-semibold">Routing Rules</h1>
+          <p className="text-sm text-black/50">Optional routing overrides per tenant</p>
         </div>
 
         {error && (

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import Nav from '@/components/Nav';
+
 import { apiGet, apiPost } from '@/lib/api';
 
 export default function PricingPage() {
@@ -37,12 +37,9 @@ export default function PricingPage() {
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-6xl mx-auto space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-semibold">Model Pricing</h1>
-            <p className="text-sm text-black/60">Configure USD per 1K tokens by model.</p>
-          </div>
-          <Nav />
+        <div>
+          <h1 className="text-2xl font-semibold">Model Pricing</h1>
+          <p className="text-sm text-black/50">Configure USD per 1K tokens by model</p>
         </div>
         {error && <p className="text-red-500">{error}</p>}
         {status && <p className="text-green-600">{status}</p>}

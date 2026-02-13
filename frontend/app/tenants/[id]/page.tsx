@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import Nav from '@/components/Nav';
+
 import StatusBadge from '@/components/StatusBadge';
 import { apiGet, apiPost, apiPut } from '@/lib/api';
 
@@ -145,7 +145,7 @@ export default function TenantDetailPage() {
         <div className="max-w-5xl mx-auto">
           <div className="flex items-center justify-between mb-6">
             <div className="animate-pulse bg-black/5 rounded h-8 w-48" />
-            <Nav />
+
           </div>
           <div className="space-y-4">
             {Array.from({ length: 3 }).map((_, i) => (
@@ -163,7 +163,7 @@ export default function TenantDetailPage() {
         <div className="max-w-5xl mx-auto">
           <div className="flex items-center justify-between mb-6">
             <h1 className="text-3xl font-semibold">Tenant Not Found</h1>
-            <Nav />
+
           </div>
           <p className="text-black/50">The tenant with ID "{tenantId}" could not be found.</p>
         </div>
@@ -176,13 +176,10 @@ export default function TenantDetailPage() {
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-5xl mx-auto space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <button onClick={() => router.push('/tenants')} className="text-sm text-black/40 hover:text-black mb-1 block">&larr; Back to Tenants</button>
-            <h1 className="text-3xl font-semibold">{tenant.name}</h1>
-            <p className="text-sm text-black/50 font-mono">{tenant.id}</p>
-          </div>
-          <Nav />
+        <div>
+          <button onClick={() => router.push('/tenants')} className="text-sm text-black/40 hover:text-black mb-1 block">&larr; Back to Tenants</button>
+          <h1 className="text-2xl font-semibold">{tenant.name}</h1>
+          <p className="text-sm text-black/50 font-mono">{tenant.id}</p>
         </div>
 
         {error && (

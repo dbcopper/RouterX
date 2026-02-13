@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import Nav from '@/components/Nav';
 import StatusBadge from '@/components/StatusBadge';
 import { apiGet } from '@/lib/api';
 import { Area, Bar, BarChart, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid, Cell } from 'recharts';
@@ -105,13 +104,10 @@ export default function DashboardPage() {
 
   return (
     <main className="min-h-screen p-8">
-      <div className="max-w-7xl mx-auto space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-semibold">Dashboard</h1>
-            <p className="text-sm text-black/50">Multi-provider routing health at a glance</p>
-          </div>
-          <Nav />
+      <div className="max-w-6xl mx-auto space-y-6">
+        <div>
+          <h1 className="text-2xl font-semibold">Dashboard</h1>
+          <p className="text-sm text-black/50">Multi-provider routing health at a glance</p>
         </div>
 
         {error && (

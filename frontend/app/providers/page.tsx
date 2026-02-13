@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import Nav from '@/components/Nav';
+
 import StatusBadge from '@/components/StatusBadge';
 import { apiDelete, apiGet, apiPut, apiPost } from '@/lib/api';
 
@@ -16,8 +16,12 @@ const PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic',
   gemini: 'Gemini',
+  deepseek: 'DeepSeek',
+  mistral: 'Mistral',
   'generic-openai': 'Generic OpenAI-Compatible'
 };
+
+const EDITABLE_BASE_URL = new Set(['generic-openai', 'deepseek', 'mistral']);
 
 export default function ProvidersPage() {
   const [items, setItems] = useState<any[]>([]);
@@ -153,12 +157,9 @@ export default function ProvidersPage() {
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-6xl mx-auto space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-semibold">Providers</h1>
-            <p className="text-sm text-black/60">Select a provider and configure keys, models, and capabilities.</p>
-          </div>
-          <Nav />
+        <div>
+          <h1 className="text-2xl font-semibold">Providers</h1>
+          <p className="text-sm text-black/50">Configure keys, models, and capabilities per provider</p>
         </div>
 
         {error && <p className="text-red-500">{error}</p>}
@@ -204,8 +205,22 @@ export default function ProvidersPage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <h2 className="text-xl font-semibold">{selected.name || PROVIDER_LABELS[selected.type] || selected.type}</h2>
-                    <p className="text-xs text-black/60">ID: {selected.id}</p>
+                    <p className="text-xs text-black/50 font-mono">{selected.type} &middot; {selected.id}</p>
                   </div>
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <span className={`text-sm ${selected.enabled ? 'text-emerald-600' : 'text-black/40'}`}>
+                      {selected.enabled ? 'Enabled' : 'Disabled'}
+                    </span>
+                    <button
+                      onClick={() => {
+                        updateField(selected.id, 'enabled', !selected.enabled);
+                        saveProvider({ ...selected, enabled: !selected.enabled });
+                      }}
+                      className={`relative w-10 h-5 rounded-full transition-colors ${selected.enabled ? 'bg-emerald-500' : 'bg-black/20'}`}
+                    >
+                      <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${selected.enabled ? 'left-5' : 'left-0.5'}`} />
+                    </button>
+                  </label>
                 </div>
 
                 <label className="block text-sm">
@@ -230,8 +245,8 @@ export default function ProvidersPage() {
                     className="mt-1 w-full border border-black/10 rounded-lg px-3 py-2"
                     value={selected.base_url || ''}
                     onChange={(e) => updateField(selected.id, 'base_url', e.target.value)}
-                    placeholder={selected.type === 'generic-openai' ? 'https://api.example.com' : 'Managed by provider'}
-                    disabled={selected.type !== 'generic-openai'}
+                    placeholder={EDITABLE_BASE_URL.has(selected.type) ? 'https://api.example.com' : 'Managed by provider (auto-configured)'}
+                    disabled={!EDITABLE_BASE_URL.has(selected.type)}
                     onBlur={() => saveProvider(selected)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {

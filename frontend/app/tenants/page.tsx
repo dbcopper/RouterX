@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import Nav from '@/components/Nav';
+
 import StatusBadge from '@/components/StatusBadge';
 import { apiGet, apiPost } from '@/lib/api';
 
@@ -85,12 +85,9 @@ export default function TenantsPage() {
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-7xl mx-auto space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-semibold">Tenants</h1>
-            <p className="text-sm text-black/50">Manage tenant isolation, billing, and suspension</p>
-          </div>
-          <Nav />
+        <div>
+          <h1 className="text-2xl font-semibold">Tenants</h1>
+          <p className="text-sm text-black/50">Manage tenant isolation, billing, and suspension</p>
         </div>
 
         {error && (
